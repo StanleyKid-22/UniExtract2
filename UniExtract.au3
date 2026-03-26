@@ -2012,7 +2012,7 @@ Func CheckGame($bUseGaup = True, $bUseGarbro = True)
 
 	If $bUseGaup Then
 		; Check GAUP first
-		Local $return = FetchStdout($quickbms & ' -l "' & $bindir & $gaup & '" "' & $file & '"', $filedir, @SW_HIDE, -1)
+		Local $return = FetchStdout($quickbms & ' -Y -l "' & $bindir & $gaup & '" "' & $file & '"', $filedir, @SW_HIDE, -1)
 
 		If @error Or StringInStr($return, "Target directory:", 0) Or StringInStr($return, "0 files found", 0) Or StringInStr($return, "Error", 0) _
 		Or StringInStr($return, "exception occured", 0) Or StringInStr($return, "not supported", 0) Or $return == "" Then
@@ -2058,9 +2058,9 @@ Func CheckGarbro($arcdisp = 0)
 	HasNetFramework(4.6)
 	Cout("Testing GARbro")
 	_CreateTrayMessageBox(t('TERM_TESTING') & ' GARbro ' & t('TERM_ARCHIVE'))
-	Local $return = FetchStdout($garbro & ' l "' & $file & '"', $filedir, @SW_HIDE)
+	Local $return = FetchStdout(@ComSpec & ' /d /c ""' & $garbro & '" l "' & $file & '" || "' & $garbro & '" list "' & $file & '""', $filedir, @SW_HIDE)
 	If Not @error And Not StringInStr($return, "Error: Input file has an unknown format") And Not StringInStr($return, "Error: Archive is empty") Then
-		$return = StringStripWS(StringStripCR(FetchStdout($garbro & ' i "' & $file & '"', $filedir, @SW_HIDE, -1)), 8)
+		$return = StringStripWS(StringStripCR(FetchStdout(@ComSpec & ' /d /c ""' & $garbro & '" i "' & $file & '" || "' & $garbro & '" info "' & $file & '""', $filedir, @SW_HIDE, -1)), 8)
 		If $return == "ZIP" Then check7z()
 
 		extract($TYPE_GARBRO, $arcdisp? $arcdisp: $return & ' ' & t('TERM_GAME') & t('TERM_FILE'))
@@ -2076,7 +2076,7 @@ Func checkIE()
 
 	Cout("Testing InstallExplorer")
 	_CreateTrayMessageBox(t('TERM_TESTING') & ' InstallExplorer ' & t('TERM_INSTALLER'))
-	Local $return = FetchStdout($quickbms & ' -l "' & $bindir & $ie & '" "' & $file & '"', $filedir, @SW_HIDE)
+	Local $return = FetchStdout($quickbms & ' -Y -l "' & $bindir & $ie & '" "' & $file & '"', $filedir, @SW_HIDE)
 	_DeleteTrayMessageBox()
 
 	If StringInStr($return, "Target directory:", 0) Or StringInStr($return, "0 files found", 0) Or StringInStr($return, "Error", 0) _
@@ -2140,7 +2140,7 @@ Func CheckIso($returnSuccess = False, $returnFail = False)
 	Cout("Testing image file")
 	_CreateTrayMessageBox(t('TERM_TESTING') & " " & t('TERM_DISK_IMAGE'))
 
-	Local $return = FetchStdout($quickbms & ' -l "' & $bindir & $iso & '" "' & $file & '"', $filedir, @SW_HIDE)
+	Local $return = FetchStdout($quickbms & ' -Y -l "' & $bindir & $iso & '" "' & $file & '"', $filedir, @SW_HIDE)
 	_DeleteTrayMessageBox()
 	If StringInStr($return, "Target directory:") Or StringInStr($return, "0 files found")  Or $return == "" _
 	Or StringInStr($return, "exception occured") Or StringInStr($return, "not supported by this WCX plugin") Then
@@ -2156,7 +2156,13 @@ Func CheckLessmsi()
 	If Not HasNetFramework(4, False) Then Return False
 
 	Cout("Testing lessmsi")
-	Local $return = FetchStdout($msi_lessmsi & ' l -t File "' & $file & '"', $outdir)
+
+	; Newer lessmsi versions expect the table name as a positional argument,
+	; while older versions used -t <TableName>. Try the modern syntax first,
+	; then fall back to the legacy syntax for compatibility.
+	Local $return = FetchStdout($msi_lessmsi & ' l "' & $file & '" File', $outdir)
+	If StringInStr($return, "Error: ") Or StringStripWS($return, 8) == "" Then _
+		$return = FetchStdout($msi_lessmsi & ' l -t File "' & $file & '"', $outdir)
 
 	Return Not StringInStr($return, "Error: ") And StringStripWS($return, 8) <> ""
 EndFunc
@@ -2181,7 +2187,7 @@ Func CheckTotalObserver($arcdisp = 0)
 	Cout("Testing TotalObserver")
 	_CreateTrayMessageBox(t('TERM_TESTING') & ' TotalObserver ' & t('TERM_ARCHIVE'))
 
-	Local $return = FetchStdout($quickbms & ' -l "' & $bindir & $observer & '" "' & $file & '"', $filedir, @SW_HIDE)
+	Local $return = FetchStdout($quickbms & ' -Y -l "' & $bindir & $observer & '" "' & $file & '"', $filedir, @SW_HIDE)
 
 	_DeleteTrayMessageBox()
 	If StringInStr($return, "not supported by this WCX plugin") Or StringInStr($return, "0 files found") Or _
@@ -2587,7 +2593,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			Cleanup("*.ogg")
 
 		Case $TYPE_GARBRO
-			_Run($garbro & ' x -ocu -if png -o "' & $outdir & '" "' & $file & '"', $outdir, @SW_MINIMIZE)
+			_Run(@ComSpec & ' /d /c ""' & $garbro & '" x -ocu -if png -o "' & $outdir & '" "' & $file & '" || "' & $garbro & '" extract -ocu -if png -o "' & $outdir & '" "' & $file & '""', $outdir, @SW_MINIMIZE)
 
 		Case $TYPE_GHOST
 			$ret = $outdir & "\" & $filename & ".exe"
@@ -2637,7 +2643,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 
 		Case $TYPE_INNO
 			If Not $additionalParameters Then
-				_Run($innounp & ' -x -m -a "' & $file & '"', $outdir)
+				_Run($innounp & ' -x -m -a -y -b -d"' & $outdir & '" "' & $file & '"', $outdir)
 
 				; Inno setup files can contain multiple versions of files, they are named ',1', ',2',... after extraction
 				; rename the first file(s), so extracted programs do not fail with 'not found' exceptions
@@ -2882,7 +2888,9 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 
 				Switch $iChoice
 					Case 1 ; jsMSI Unpacker
-						_Run($msi_jsmsix & ' "' & $file & '"|"' & $outdir & '"', $filedir, @SW_HIDE, False, False)
+						Local $sJsmsixOutdir = $outdir
+						If StringRight($sJsmsixOutdir, 1) <> "\" Then $sJsmsixOutdir &= "\"
+						_Run($msi_jsmsix & ' "' & $file & '|' & $sJsmsixOutdir & '"', $filedir, @SW_HIDE, False, False)
 						_FileRead($outdir & "\MSI Unpack.log", True)
 						Cleanup("*.cab")
 
@@ -2892,7 +2900,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 
 					Case 3 ; MSI Total Commander plugin
 						DirCreate($tempoutdir)
-						_Run($quickbms & ' "' & $bindir & $msi_plug & '" "' & $file & '" "' & $tempoutdir & '"', $outdir, @SW_MINIMIZE, True, False)
+						_Run($quickbms & ' -Y "' & $bindir & $msi_plug & '" "' & $file & '" "' & $tempoutdir & '"', $outdir, @SW_MINIMIZE, True, False)
 
 						; Extract files from extracted CABs
 						Local $aFiles = _FileListToArrayRec($tempoutdir, "*.cab", $FLTAR_FILES, $FLTAR_RECUR, $FLTAR_NOSORT, $FLTAR_FULLPATH)
@@ -3010,7 +3018,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 
 		Case $TYPE_QBMS
 			Local $sPlugin = $additionalParameters? $bindir & $additionalParameters: $bms
-			_Run($quickbms & ' -K "' & $sPlugin & '" "' & $file & '" "' & $outdir & '"', $outdir, @SW_MINIMIZE, True, False)
+			_Run($quickbms & ' -Y -K "' & $sPlugin & '" "' & $file & '" "' & $outdir & '"', $outdir, @SW_MINIMIZE, True, False)
 			If FileExists($bms) Then FileDelete($bms)
 
 			If $additionalParameters == $ie Then
@@ -3582,7 +3590,7 @@ Func BmsExtract($sName, $hDB = 0)
 		Local $hFile = FileOpen($bms, $FO_OVERWRITE)
 		FileWrite($hFile, $aReturn[2])
 		FileClose($hFile)
-		Local $return = FetchStdout($quickbms & ' -l "' & $bms & '" "' & $file & '"', $filedir, @SW_HIDE, -1)
+		Local $return = FetchStdout($quickbms & ' -Y -l "' & $bms & '" "' & $file & '"', $filedir, @SW_HIDE, -1)
 
 		If Not StringInStr($return, "0 files found") And Not StringInStr($return, "Error") And Not StringInStr($return, "invalid") _
 		And Not StringInStr($return, "expected: ") And $return <> "" Then
