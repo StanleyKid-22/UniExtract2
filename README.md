@@ -29,7 +29,7 @@ Get the latest version [here](https://github.com/gvp9000/UniExtract2/releases/do
 
 ###### Virus alert?
 
-Universal Extractor does not contain any malware. Some anti-virus programs occasionally misdetect files inside UniExtract's program directory. You can be sure that this is a so-called false positive, an error - if you downloaded UniExtract from the official source at `https://github.com/Bioruebe/UniExtract2`. A more detailed explanation can be found [here](/docs/ANTI-MALWARE.md). If you encounter a false positive, please report it [here](https://github.com/Bioruebe/UniExtract2/issues/78).
+Universal Extractor does not contain any malware. Some anti-virus programs occasionally misdetect files inside UniExtract's program directory. You can be sure that this is a so-called false positive, an error - if you downloaded UniExtract from the official source at `https://github.com/gvp9000/UniExtract2`. A more detailed explanation can be found [here](/docs/ANTI-MALWARE.md). If you encounter a false positive, please report it [here](https://github.com/Bioruebe/UniExtract2/issues/78).
 
 ###### 'Windows protected your PC'?
 
