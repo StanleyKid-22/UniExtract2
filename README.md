@@ -1,6 +1,6 @@
 # Universal Extractor 2 _(UniExtract2)_
 
-[![Download](https://img.shields.io/badge/download-success?style=for-the-badge)](https://github.com/Bioruebe/UniExtract2#download)
+[![Download](https://img.shields.io/badge/download-success?style=for-the-badge)](https://github.com/gvp9000/UniExtract2/releases)
 
 Universal Extractor 2 is a tool designed to **extract files from any type of extractable file**.
 
@@ -25,7 +25,7 @@ See the [changelog](docs/changelog.txt) for a complete log of all improvements.
 
 ## Download
 
-Get the latest version [here](https://github.com/Bioruebe/UniExtract2/releases/download/v2.0.0-rc.3/UniExtractRC3.zip)
+Get the latest version [here](https://github.com/gvp9000/UniExtract2/releases/download/v2.0.0.1_RC5/UniExtractRC5.zip)
 
 ###### Virus alert?
 
