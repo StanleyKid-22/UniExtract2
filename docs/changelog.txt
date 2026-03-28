@@ -1,4 +1,6 @@
 2.1.0.0 RC 6 (2026)
+  Improved file detection with DiE (Detect-it-easy) engine
+  Updated DiE engine to version 3.10
   Updated exeinfope to version 0.0.9.5
   Updated EnigmaVBUnpacker to version 0.6.3
   Updated innounp to version 2.67.4
