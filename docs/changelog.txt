@@ -1,3 +1,22 @@
+2.1.0.0 RC 6 (2026)
+  Updated exeinfope to version 0.0.9.5
+  Updated EnigmaVBUnpacker to version 0.6.3
+  Updated innounp to version 2.67.4
+  Updated jsMSIx to version 1.19.0.1
+  Updated MediaInfo to version 26.1.0
+  Updated mtee to version 2.7
+  Updated pea to version 1.2.9
+  Updated trid to version 2.47
+  Updated upx to version 5.1.1
+  Updated lessmsi to version 2.12.5
+  Updated 7zip to version 26.0
+  Updated chdman to version 286
+  Updated UnRAR to version 7.20
+  Fix a problem where the application terminated during update
+  Handles new version's lessmsi executables
+  Handles new version innoupdate executable
+  Better log system
+
 2.0.0 RC 4 (2023):
   Added support for more Smart Install Maker installers using simdec
   Added support for more Inno Setup installers using innoextract, thanks to hgdagon
