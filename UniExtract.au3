@@ -188,6 +188,8 @@ Global $unpackfailed, $exefailed, $ttarchfailed
 Global $g_bInnoExtractUsable = False
 Global $g_bSymlinkOnlyWarning = False
 Global $g_sPrimaryDetectRaw = "", $g_sPrimaryDetectMatch = "", $g_sPrimaryDetectScanner = "", $g_bPrimaryStrongHit = False
+Global $g_sDetectionWinner = "", $g_sExtractorWinner = "", $g_sDetectedTypeForSummary = ""
+Global $g_bStrictPipeline = True, $g_sStoredTridType = "", $g_sStoredUnixType = ""
 Global $oldpath, $oldoutdir, $sUnicodeName, $createdir
 Global $guiprefs, $TBgui = 0, $exStyle = -1, $idTrayStatusExt, $BatchBut, $idProgress, $sComError = 0
 Global $Tray_Statusbox, $isexe = False, $Message, $run = 0, $runtitle, $idOptDeleteSourceFile[3]
@@ -434,31 +436,37 @@ Func StartExtraction()
 	$g_sPrimaryDetectMatch = ""
 	$g_sPrimaryDetectScanner = ""
 	$g_bPrimaryStrongHit = False
+	$g_sDetectionWinner = ""
+	$g_sExtractorWinner = ""
+	$g_sDetectedTypeForSummary = ""
+	$g_bStrictPipeline = True
+	$g_sStoredTridType = ""
+	$g_sStoredUnixType = ""
 
 	; If an extractor is specified via command line parameter, we simply use that without scanning
 	If $sArcTypeOverride Then Return extract($sArcTypeOverride, $sArcTypeOverride & " " & t('TERM_FILE'))
 
 	; Extract contents from known file types
 
-	; UniExtract uses four methods of detection (in order):
-	; 1. File extensions for special cases
-	; 2. Binary file analysis of files using TrID if file extension is not .exe
-	; 3. Binary file analysis using Detect It Easy (DiE), with Exeinfo PE fallback
-	; 4. Extra analysis using PeID if executable is not recognized by the primary detector
-	; 5. Binary file analysis of files using TrID
-	; 6. File extensions
+	; Strict detection pipeline (in order):
+	; 1. Detect It Easy (DiE), with Exeinfo PE fallback
+	; 2. TrID
+	; 3. File extension checks
+	; 4. 7-Zip probe
+	; 5. Unix file tool fallback
+	; 6. Final detector-based routing fallback
 
 	; First, check for file extensions that require special actions
 	InitialCheckExt()
 
-	; If file is an .exe, scan with Exeinfo PE and PEiD
+	; Executables use the dedicated strict pipeline in IsExe()
 	If $fileext = "exe" Or $fileext = "dll" Then IsExe()
 
-	; Scan file with TrID, if file is not an .exe
-	FileScan_Trid($extract)
-
-	; Detect It Easy supports non-executables as well
+	; Primary detector first for every non-executable file
 	If Not $exefailed Then FileScan_ExeInfo()
+
+	; Secondary detector
+	FileScan_Trid($extract)
 
 	; Display file information and terminate if scan only mode
 	If Not $extract Then
@@ -474,7 +482,9 @@ Func StartExtraction()
 	; Use file extension if signature not recognized
 	CheckExt()
 
-	check7z()
+	If check7z(0, False, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_7Z, "7-Zip " & t('TERM_ARCHIVE'))
+	FileScan_UnixFile()
+	ResolveStrictPipeline()
 
 	; Cannot determine filetype, all checks failed - abort
 	_DeleteTrayMessageBox()
@@ -506,15 +516,11 @@ Func IsExe()
 
 	If Not $extract Then Return
 
-	; Perform additional tests if necessary
-	checkInno()
-	checkIE()
-
-	CheckGame()
-
 	FileScan_Trid()
-
-	check7z()
+	CheckExt()
+	If check7z(0, False, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_7Z, "7-Zip " & t('TERM_INSTALLER') & " " & t('TERM_PACKAGE'))
+	FileScan_UnixFile()
+	ResolveStrictPipeline()
 
 	terminate($STATUS_UNKNOWNEXE, $file, StringLeft($aFiletype[0][1], 50))
 EndFunc
@@ -972,7 +978,6 @@ Func FileScan_Trid($analyze = 1)
 	EndIf
 
 	_DeleteTrayMessageBox()
-	FileScan_UnixFile()
 
 	$tridfailed = True
 EndFunc
@@ -1121,6 +1126,11 @@ Func FileScan_UnixFile()
 		Return
 	EndIf
 
+	If $g_bStrictPipeline Then
+		If $g_sStoredUnixType = "" Then $g_sStoredUnixType = $sFileType
+		Return
+	EndIf
+
 	filecompare($sFileType)
 EndFunc
 
@@ -1174,8 +1184,33 @@ Func FileScan_ExeInfo($bUseCmd = $extract)
 	_CreateTrayMessageBox(t('SCANNING_EXE', "Detect It Easy (DiE)"))
 
 	If FileExists($diec_path) Then
-		$sFileType = FetchStdout($diec & ' "' & $file & '"', $bindir, @SW_HIDE, 0, False, False, False)
+		; Run Detect It Easy from its own folder so db/scripts resolve correctly.
+		; Use -r for richer text output and merge stderr into stdout because some DIE builds
+		; write script/runtime messages there.
+		Local $sDieWorkDir = $bindir & "die"
+		Local $sDieCmd = $diec & ' -r "' & $file & '" 2>&1'
+		$sFileType = FetchStdout($sDieCmd, $sDieWorkDir, @SW_HIDE, 0, False, False, False)
 		If @error Then $sFileType = ""
+
+		If Not StringIsSpace($sFileType) Then
+			Cout("Detect It Easy raw output:" & @CRLF & $sFileType)
+
+			; Normalize DIE output and accept it if it contains a strong known signature.
+			Local $sDieNorm = StringLower(StringStripWS(StringReplace(StringReplace($sFileType, @CR, " "), @LF, " "), 7))
+			If StringInStr($sDieNorm, "installer: inno setup module") _
+				Or StringInStr($sDieNorm, "data: inno setup installer data") _
+				Or StringInStr($sDieNorm, "installer: nullsoft") _
+				Or StringInStr($sDieNorm, "nsis") _
+				Or StringInStr($sDieNorm, "installshield") _
+				Or StringInStr($sDieNorm, "windows installer") _
+				Or StringInStr($sDieNorm, "msi") _
+				Or StringInStr($sDieNorm, "7-zip sfx") Then
+				Cout("Detect It Easy produced usable output")
+			Else
+				Cout("Detect It Easy raw output was not considered usable")
+				$sFileType = ""
+			EndIf
+		EndIf
 	EndIf
 
 	If StringIsSpace($sFileType) Then
@@ -1224,7 +1259,12 @@ Func FileScan_ExeInfo($bUseCmd = $extract)
 	$g_sPrimaryDetectMatch = $sMatchType
 	$g_sPrimaryDetectScanner = $sScanner
 	$g_bPrimaryStrongHit = _IsStrongPrimaryDetectorHit($sMatchType)
-	If $g_bPrimaryStrongHit Then Cout("Primary detector strong match: " & StringReplace($sMatchType, @CRLF, " | "))
+	If $g_bPrimaryStrongHit Then
+		Cout("Primary detector strong match: " & StringReplace($sMatchType, @CRLF, " | "))
+		LogDetectionWinner($sScanner, $sMatchType)
+	EndIf
+
+	If $g_bStrictPipeline Then Return $sFileType
 
 	; Match known patterns
 	Select
@@ -1498,6 +1538,10 @@ EndFunc
 
 ; Compare unix file tool's return with supported file types
 Func filecompare($sFileType)
+	If $g_bStrictPipeline Then
+		If $g_sStoredUnixType = "" Then $g_sStoredUnixType = $sFileType
+		Return
+	EndIf
 	Select
 		Case StringInStr($sFileType, "7 zip archive data") Or StringInStr($sFileType, "7-zip archive data")
 			extract($TYPE_7Z, '7-Zip ' & t('TERM_ARCHIVE'))
@@ -1591,6 +1635,10 @@ EndFunc
 ; Compare TrID's return with supported file types
 Func tridcompare($sFileType)
 	Cout("--> " & $sFileType)
+	If $g_bStrictPipeline Then
+		If $g_sStoredTridType = "" Then $g_sStoredTridType = $sFileType
+		Return
+	EndIf
 	Select
 		Case StringInStr($sFileType, "7-Zip compressed archive")
 			extract($TYPE_7Z, '7-Zip ' & t('TERM_ARCHIVE'))
@@ -2348,6 +2396,54 @@ Func CheckTotalObserver($arcdisp = 0)
 EndFunc
 
 ; If detection fails, try to determine file type by extension
+Func ResolveStrictPipeline()
+	If Not $extract Then Return False
+
+	Cout("Strict fallback: resolving stored detector hints")
+	$g_bStrictPipeline = False
+
+	If $g_sPrimaryDetectMatch <> "" Then
+		Cout("Strict fallback: applying primary detector match")
+		Local $sSaved = $g_sPrimaryDetectMatch
+		; Reuse existing routing logic now that strict mode is disabled
+		If StringInStr($sSaved, "Inno Setup") Then
+			checkInno()
+		ElseIf StringInStr($sSaved, "Nullsoft") Then
+			checkNSIS()
+		ElseIf StringInStr($sSaved, "Microsoft Windows Installer") Or StringInStr($sSaved, "MSI Installer") Then
+			extract($TYPE_MSI, 'Windows Installer (MSI) ' & t('TERM_PACKAGE'))
+		ElseIf StringInStr($sSaved, "NOT EXE - .mp4") Or StringInStr($sSaved, "NOT EXE - .m4v") Or _
+			 StringInStr($sSaved, "MPEG-4") Or StringInStr($sSaved, "QuickTime Movie") Or _
+			 StringInStr($sSaved, "Matroska") Or StringInStr($sSaved, "Windows Media (generic)") Or _
+			 StringInStr($sSaved, "MPEG-2 Transport Stream") Or StringInStr($sSaved, "Bink video") Or _
+			 StringInStr($sSaved, "Smacker movie/video") Then
+			If StringInStr($sSaved, "Bink video") Or StringInStr($sSaved, "Smacker movie/video") Then
+				extract($TYPE_VIDEO_CONVERT, t('TERM_VIDEO') & ' ' & t('TERM_FILE'))
+			Else
+				extract($TYPE_VIDEO, t('TERM_VIDEO') & ' ' & t('TERM_FILE'))
+			EndIf
+		ElseIf StringInStr($sSaved, "DOCTYPE : html") Or StringInStr($sSaved, "HTML") Then
+			terminate($STATUS_NOTPACKED, $file, $fileext, $sSaved)
+		Else
+			; Fallback to existing user definitions
+			UserDefCompare($aExeinfoDefinitions, $sSaved, "Exeinfo")
+		EndIf
+	EndIf
+
+	If $g_sStoredTridType <> "" Then
+		Cout("Strict fallback: applying TrID match")
+		tridcompare($g_sStoredTridType)
+	EndIf
+
+	If $g_sStoredUnixType <> "" Then
+		Cout("Strict fallback: applying unix file tool match")
+		filecompare($g_sStoredUnixType)
+	EndIf
+
+	$g_bStrictPipeline = True
+	Return False
+EndFunc
+
 Func CheckExt()
 	Local $aDefinitions, $aReturn
 	For $dir In $aDefDirs
@@ -2602,7 +2698,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 	Switch $arctype
 		Case $TYPE_7Z
 			Local $sPassword = _FindArchivePassword($7z & ' l -p -slt "' & $file & '"', $7z & ' t -p"%PASSWORD%" "' & $file & '"', "Encrypted = +", "Wrong password?", 0, "Everything is Ok")
-			_Run($7z & ' x ' & ($sPassword == 0? '"': '-p"' & $sPassword & '" "') & $file & '"', $outdir, @SW_HIDE, True, True, True, True)
+			_Run($7z & ' x -aou -y ' & ($sPassword == 0? '"': '-p"' & $sPassword & '" "') & $file & '"', $outdir, @SW_HIDE, True, True, True, True)
 			If @error = 3 Then terminate($STATUS_MISSINGPART)
 			If @extended Then terminate($STATUS_PASSWORD, $file, $arctype, $arcdisp)
 
@@ -2613,14 +2709,14 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 				; Extract inner CPIO for RPMs
 				Local $sPath = $outdir & "\" & $filename & ".cpio"
 				If FileExists($sPath) Then
-					_Run($7z & ' x "' & $sPath & '"', $outdir)
+					_Run($7z & ' x -aou -y "' & $sPath & '"', $outdir)
 					FileDelete($sPath)
 				EndIf
 			ElseIf StringInStr($sFileType, "Debian Linux Package", 0) Then
 				; Extract inner tarball for DEBs
 				Local $sPath = $outdir & "\data.tar"
 				If FileExists($sPath) Then
-					_Run($7z & ' x "' & $sPath & '"', $outdir)
+					_Run($7z & ' x -aou -y "' & $sPath & '"', $outdir)
 					FileDelete($sPath)
 				EndIf
 			ElseIf $additionalParameters == "bz2" Or $additionalParameters == "gz" Or $additionalParameters == "xz" Or $additionalParameters == "Z" Then
@@ -2629,7 +2725,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 				If FileExists($sPath) Then
 					Local $sReturn = TridLib_Analyse_Simple($sPath)
 					If StringInStr($sReturn, "Tape ARchive") Or StringRight($sPath, 3) = "tar" Then
-						_Run($7z & ' x -y -o"' & $outdir & '" "' & $sPath & '"', $outdir)
+						_Run($7z & ' x -aou -y -o"' & $outdir & '" "' & $sPath & '"', $outdir)
 						FileDelete($sPath)
 					EndIf
 				EndIf
@@ -2756,7 +2852,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			_Run($chd & ' extracthd -i "' & $file & '" -o "' & $outdir & '\' & $filename & '.img"', $outdir)
 
 		Case $TYPE_CHM
-			_Run($7z & ' x -y -o"' & $outdir & '" "' & $file & '"', $outdir)
+			_Run($7z & ' x -aou -y -o"' & $outdir & '" "' & $file & '"', $outdir)
 			Local $aCleanup[] = ['#*', '$*']
 			Cleanup($aCleanup)
 			$hSearch = FileFindFirstFile($outdir & '\*')
@@ -2792,7 +2888,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			$oldfiles = ReturnFiles($outdir)
 
 			; Decompress archive with 7-zip
-			_Run($7z & ' x -y -o"' & $outdir & '" "' & $file & '"', $outdir)
+			_Run($7z & ' x -aou -y -o"' & $outdir & '" "' & $file & '"', $outdir)
 
 			; Check for new files
 			Local $aFiles = _FileListToArray($outdir, "*", $FLTA_FILES)
@@ -2806,7 +2902,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 				Local $return = FetchStdout($7z & ' l "' & $outdir & '\' & $fname & '"', $outdir, @SW_HIDE)
 				If Not StringInStr($return, "Listing archive:", 0) Then ContinueLoop
 
-				_Run($7z & ' x "' & $outdir & '\' & $fname & '"', $outdir, @SW_HIDE)
+				_Run($7z & ' x -aou -y "' & $outdir & '\' & $fname & '"', $outdir, @SW_HIDE)
 				FileDelete($outdir & '\' & $fname)
 			Next
 
@@ -2858,7 +2954,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			Local $tmp = $tempoutdir & $filename
 			If FileExists($tmp) Then
 				Cout("Installer uses gz compression. Unpacking inner archive.")
-				_Run($7z & ' x "' & $tmp & '"', $tempoutdir, @SW_HIDE, True, True, True, False)
+				_Run($7z & ' x -aou -y "' & $tmp & '"', $tempoutdir, @SW_HIDE, True, True, True, False)
 				_FileDelete($tmp)
 			EndIf
 
@@ -2962,6 +3058,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 				; Inno success must be based on extracted output, not only tool log wording.
 				If _DirGetSize($outdir, $initdirsize + 1) > $initdirsize Or FileGetTime($outdir, 0, 1) <> $dirmtime Then
 					Cout("Inno extraction success (output detected)")
+					LogExtractorWinner("innounp")
 					$success = $RESULT_SUCCESS
 				EndIf
 			EndIf
@@ -2975,6 +3072,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 				; Fallback innoextract path: mark success if files were actually produced.
 				If _DirGetSize($outdir, $initdirsize + 1) > $initdirsize Or FileGetTime($outdir, 0, 1) <> $dirmtime Then
 					Cout("Inno fallback extraction success (output detected)")
+					LogExtractorWinner("innoextract")
 					$success = $RESULT_SUCCESS
 				EndIf
 			EndIf
@@ -3152,7 +3250,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 				If Not @error Then
 					For $i = 1 To $aFiles[0]
 						Cout("Extracting cab file " & $aFiles[$i])
-						_Run($7z & ' x "' & $aFiles[$i] & '"', $tempoutdir, @SW_HIDE, True, True, True, False)
+						_Run($7z & ' x -aou -y "' & $aFiles[$i] & '"', $tempoutdir, @SW_HIDE, True, True, True, False)
 						If $success == $RESULT_SUCCESS Then Cleanup($aFiles[$i])
 					Next
 				EndIf
@@ -3166,45 +3264,49 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			EndIf
 
 		Case $TYPE_MSI
-			; Production MSI pipeline:
-			;   1) lessmsi list validation only
-			;   2) lessmsi real extract
-			;   3) 7-Zip fallback
-			;   4) msiexec administrative extract fallback
+			; Production MSI pipeline (strict order):
+			;   1) lessmsi real extract (primary)
+			;   2) 7-Zip fallback
+			;   3) msiexec administrative extract fallback
 			$success = $RESULT_FAILED
 			Local $sLessmsiList = ""
+			Local $bLessmsiTried = False
 
 			If HasNetFramework(4, False) Then
-				Cout("Testing lessmsi")
+				DirCreate($tempoutdir)
+				Cout("MSI pipeline: trying lessmsi extract (primary)")
+				$bLessmsiTried = True
+				RunWait(@ComSpec & ' /d /c ""' & $msi_lessmsi & ' x "' & $file & '" "' & $tempoutdir & '""', $filedir, @SW_HIDE)
+
+				; Optional diagnostics only - do not gate extraction on list output.
+				Cout("MSI pipeline: collecting lessmsi list diagnostics")
 				$sLessmsiList = FetchStdout($msi_lessmsi & ' l -t File "' & $file & '"', $outdir)
 				If StringInStr($sLessmsiList, "File,Component_,FileName") Then
-					Cout("MSI pipeline: lessmsi list OK, trying real extract")
-					DirCreate($tempoutdir)
-					Cout("MSI pipeline: executing lessmsi x")
-					RunWait(@ComSpec & ' /d /c ""' & $msi_lessmsi & ' x "' & $file & '" "' & $tempoutdir & '""', $filedir, @SW_HIDE)
+					Cout("MSI pipeline: lessmsi list diagnostics OK")
+				Else
+					Cout("MSI pipeline: lessmsi list diagnostics returned no file table")
+				EndIf
 
-					; Normalize lessmsi output if it created SourceDir-style admin folders
-					If FileExists($tempoutdir & '\SourceDir') Then
-						MoveFiles($tempoutdir & '\SourceDir', $tempoutdir, False, "", True)
-						DirRemove($tempoutdir & '\SourceDir', True)
-					ElseIf FileExists($tempoutdir & '\' & $filename & '\SourceDir') Then
-						MoveFiles($tempoutdir & '\' & $filename & '\SourceDir', $tempoutdir, False, "", True)
-						DirRemove($tempoutdir & '\' & $filename, True)
-					EndIf
+				; Normalize lessmsi output if it created SourceDir-style admin folders
+				If FileExists($tempoutdir & '\SourceDir') Then
+					MoveFiles($tempoutdir & '\SourceDir', $tempoutdir, False, "", True)
+					DirRemove($tempoutdir & '\SourceDir', True)
+				ElseIf FileExists($tempoutdir & '\' & $filename & '\SourceDir') Then
+					MoveFiles($tempoutdir & '\' & $filename & '\SourceDir', $tempoutdir, False, "", True)
+					DirRemove($tempoutdir & '\' & $filename, True)
+				EndIf
 
-					If DirGetSize($tempoutdir) > 0 Then
-						MoveFiles($tempoutdir, $outdir, False, "", True)
-						If DirGetSize($outdir) > $initdirsize Then
-							$success = $RESULT_SUCCESS
-							Cout("MSI pipeline: lessmsi extract success (files detected)")
-						Else
-							Cout("MSI pipeline: lessmsi extract produced no usable files in output dir")
-						EndIf
+				If DirGetSize($tempoutdir) > 0 Then
+					MoveFiles($tempoutdir, $outdir, False, "", True)
+					If DirGetSize($outdir) > $initdirsize Then
+						$success = $RESULT_SUCCESS
+						Cout("MSI pipeline: lessmsi extract success (files detected)")
+						LogExtractorWinner("lessmsi")
 					Else
-						Cout("MSI pipeline: lessmsi extract produced no files")
+						Cout("MSI pipeline: lessmsi extract produced no usable files in output dir")
 					EndIf
 				Else
-					Cout("MSI pipeline: lessmsi list failed")
+					Cout("MSI pipeline: lessmsi extract produced no files")
 				EndIf
 			Else
 				Cout("MSI pipeline: .NET 4 missing, skipping lessmsi")
@@ -3212,15 +3314,20 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 
 			; Fallback 1: 7-Zip
 			If $success == $RESULT_FAILED Then
-				Cout("MSI pipeline: lessmsi failed, trying 7-Zip fallback")
+				If $bLessmsiTried Then
+					Cout("MSI pipeline: lessmsi failed, trying 7-Zip fallback")
+				Else
+					Cout("MSI pipeline: lessmsi unavailable, trying 7-Zip fallback")
+				EndIf
 				DirCreate($tempoutdir)
-				_Run($7z & ' x "' & $file & '"', $tempoutdir, @SW_HIDE, True, True, True)
+				_Run($7z & ' x -aou -y "' & $file & '"', $tempoutdir, @SW_HIDE, True, True, True)
 				If $appendext Then AppendExtensions($tempoutdir)
 				MoveFiles($tempoutdir, $outdir, False, "", True)
 				Sleep(300)
 				If DirGetSize($outdir) > $initdirsize Then
 					$success = $RESULT_SUCCESS
 					Cout("MSI pipeline: 7-Zip success (files detected)")
+					LogExtractorWinner("7z")
 				Else
 					$success = $RESULT_FAILED
 				EndIf
@@ -3229,7 +3336,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			; Fallback 2: Administrative install via msiexec
 			If $success == $RESULT_FAILED Then
 				Cout("MSI pipeline: 7-Zip failed, trying msiexec administrative install")
-				RunWait('msiexec.exe /a "' & $file & '" /qn TARGETDIR="' & $outdir & '"', $filedir, @SW_HIDE)
+				RunWait(@ComSpec & ' /d /c msiexec.exe /a "' & $file & '" /qn TARGETDIR="' & $outdir & '"', $filedir, @SW_HIDE)
 
 				; msiexec /a often extracts into SourceDir or into a nested <filename>\SourceDir tree.
 				; Normalize that output into $outdir so UniExtract sees a usable result.
@@ -3249,6 +3356,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 				If DirGetSize($outdir) > $initdirsize Then
 					$success = $RESULT_SUCCESS
 					Cout("MSI pipeline: msiexec success (files detected)")
+					LogExtractorWinner("msiexec /a")
 				Else
 					$success = $RESULT_FAILED
 				EndIf
@@ -3266,7 +3374,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 				Case 1 ; 7-Zip
 					DirCreate($tempoutdir)
 
-					_Run($7z & ' x "' & $file & '"', $tempoutdir)
+					_Run($7z & ' x -aou -y "' & $file & '"', $tempoutdir)
 
 					AppendExtensions($tempoutdir)
 					MoveFiles($tempoutdir, $outdir, False, "", True)
@@ -3324,7 +3432,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 
 		Case $TYPE_NSIS
 			; Rename duplicates and extract
-			_Run($7z & ' x -aou' & ' "' & $file & '"', $outdir)
+			_Run($7z & ' x -aou -y' & ' "' & $file & '"', $outdir)
 
 			If $success == $RESULT_FAILED Then checkIE()
 
@@ -3545,7 +3653,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			; Newer files contain 'archtemp.tar', old version are standard tar.gz archives
 			Local $sFile = $tempoutdir & "archtemp.tar"
 			If FileExists($sFile) Then
-				_Run($7z & ' x "' & $sFile & '"', $tempoutdir)
+				_Run($7z & ' x -aou -y "' & $sFile & '"', $tempoutdir)
 				FileDelete($sFile)
 			EndIf
 
@@ -3730,7 +3838,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 					; Extract using unzip, falling back to 7-Zip
 					Case 4
 						_Run($zip & ' -x "' & $file & '"', $outdir)
-						If $success == $RESULT_FAILED Then _Run($7z & ' x "' & $file & '"', $outdir)
+						If $success == $RESULT_FAILED Then _Run($7z & ' x -aou -y "' & $file & '"', $outdir)
 					; Not a Wise installer
 					Case 5
 						Return False
@@ -3778,7 +3886,6 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 
 	; -----Success evaluation----- ;
 
-	Cout("Extraction raw result: " & _ResultToText($success) & " (" & $success & ")")
 	If FileExists($tempoutdir) Then DirRemove($tempoutdir)
 	$outdir &= "\"
 
@@ -3803,21 +3910,29 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 	EndSwitch
 
 	If $success = $RESULT_FAILED Then
+		If $returnFail Then
+			Cout("Extraction attempt result: " & _ResultToText($success) & " (" & $success & ")")
+			$success = $RESULT_UNKNOWN
+			Return 0
+		EndIf
 		Cout("Extraction final result: " & _ResultToText($success) & " (" & $success & ")")
-		If Not $returnFail Then terminate($STATUS_FAILED, $file, $arctype, $arcdisp)
-		$success = $RESULT_UNKNOWN
-		Return 0
+		terminate($STATUS_FAILED, $file, $arctype, $arcdisp)
 	EndIf
 
 	If $success = $RESULT_UNKNOWN Then
 		Cout("No explicit tool success marker was found, but usable output exists")
 		$success = $RESULT_SUCCESS
 	EndIf
+	Cout("Extraction evaluated result: " & _ResultToText($success) & " (" & $success & ")")
+	
+	If $returnSuccess Then
+		Cout("Extraction attempt result: " & _ResultToText($success) & " (" & $success & ")")
+		$success = $RESULT_UNKNOWN
+		Return 1
+	EndIf
 
 	Cout("Extraction final result: " & _ResultToText($success) & " (" & $success & ")")
-	If Not $returnSuccess Then terminate($STATUS_SUCCESS, $filenamefull, $arctype, $arcdisp)
-	$success = $RESULT_UNKNOWN
-	Return 1
+	terminate($STATUS_SUCCESS, $filenamefull, $arctype, $arcdisp)
 EndFunc
 
 ; Extract disk images and convert then if necessary
@@ -4485,6 +4600,201 @@ Func _RegWrite($sKey, $sValueName, $sType = "REG_SZ", $sValue = "")
 	Return SetError($iError, 0, False)
 EndFunc
 
+; -------------------------- Logging summary helpers ---------------------------
+
+Func _NormalizeOneLine($sText)
+	$sText = StringReplace($sText, @CR, " ")
+	$sText = StringReplace($sText, @LF, " ")
+	While StringInStr($sText, "  ")
+		$sText = StringReplace($sText, "  ", " ")
+	WEnd
+	Return StringStripWS($sText, 3)
+EndFunc
+
+Func LogDetectionWinner($sTool, $sType)
+	$g_sDetectionWinner = _NormalizeOneLine($sTool)
+	$g_sDetectedTypeForSummary = _NormalizeOneLine($sType)
+	Cout("DETECTION WINNER: " & $g_sDetectionWinner & " -> " & $g_sDetectedTypeForSummary)
+EndFunc
+
+Func LogExtractorWinner($sTool)
+	$g_sExtractorWinner = _NormalizeOneLine($sTool)
+	Cout("EXTRACTOR WINNER: " & $g_sExtractorWinner)
+EndFunc
+
+Func LogPerFileSummary($sFinalStatus, $sArcDisp = "")
+	Local $sInput = ($filenamefull <> "" ? $filenamefull : $file)
+	Local $sDetect = _NormalizeOneLine($g_sDetectedTypeForSummary)
+	Local $sExtFull = StringLower($file)
+	Local $sExt = StringLower(StringTrimLeft($file, StringInStr($file, ".", 0, -1)))
+
+	; Treat placeholder / weak detector strings as missing and keep falling back.
+	If $sDetect = "" Or $sDetect = "-1" Or $sDetect = "0" Or StringLower($sDetect) = "unknown" _
+		Or StringLower($sDetect) = "gzip compressed file" Or StringLower($sDetect) = "xz compressed file" _
+		Or StringLower($sDetect) = "bzip2 compressed file" Or StringLower($sDetect) = "7-zip archive" _
+		Or StringLower($sDetect) = "lzh compressed file" Then
+		$sDetect = _NormalizeOneLine($sArcDisp)
+	EndIf
+
+	If $sDetect = "" Or $sDetect = "-1" Or $sDetect = "0" Or StringLower($sDetect) = "unknown" _
+		Or StringLower($sDetect) = "gzip compressed file" Or StringLower($sDetect) = "xz compressed file" _
+		Or StringLower($sDetect) = "bzip2 compressed file" Or StringLower($sDetect) = "7-zip archive" _
+		Or StringLower($sDetect) = "lzh compressed file" Then
+
+		; Prefer extension-based labels for known archive families, including compound extensions.
+		If StringRight($sExtFull, 7) = ".tar.gz" Or StringRight($sExtFull, 4) = ".tgz" Then
+			$sDetect = "TAR.GZ archive"
+		ElseIf StringRight($sExtFull, 7) = ".tar.xz" Or StringRight($sExtFull, 4) = ".txz" Then
+			$sDetect = "TAR.XZ archive"
+		ElseIf StringRight($sExtFull, 8) = ".tar.bz2" Or StringRight($sExtFull, 5) = ".tbz2" Or StringRight($sExtFull, 4) = ".tbz" Then
+			$sDetect = "TAR.BZ2 archive"
+		Else
+			Switch $sExt
+				Case "zip"
+					$sDetect = "Zip archive"
+				Case "7z"
+					$sDetect = "7-Zip archive"
+				Case "rar"
+					$sDetect = "RAR archive"
+				Case "xar"
+					$sDetect = "XAR archive"
+				Case "lzh", "lha"
+					$sDetect = "LZH archive"
+				Case "gz"
+					$sDetect = "Gzip archive"
+				Case "bz2"
+					$sDetect = "BZip2 archive"
+				Case "xz"
+					$sDetect = "XZ archive"
+				Case "tar"
+					$sDetect = "TAR archive"
+				Case "iso"
+					$sDetect = "ISO image"
+			EndSwitch
+		EndIf
+	EndIf
+
+	If $sDetect = "" Or $sDetect = "-1" Or $sDetect = "0" Or StringLower($sDetect) = "unknown" _
+		Or StringLower($sDetect) = "gzip compressed file" Or StringLower($sDetect) = "xz compressed file" _
+		Or StringLower($sDetect) = "bzip2 compressed file" Or StringLower($sDetect) = "7-zip archive" _
+		Or StringLower($sDetect) = "lzh compressed file" Then
+		$sDetect = _NormalizeOneLine(_FiletypeGet(False))
+	EndIf
+
+	If $sDetect = "" Or $sDetect = "-1" Or $sDetect = "0" Or StringLower($sDetect) = "unknown" _
+		Or StringLower($sDetect) = "gzip compressed file" Or StringLower($sDetect) = "xz compressed file" _
+		Or StringLower($sDetect) = "bzip2 compressed file" Or StringLower($sDetect) = "7-zip archive" _
+		Or StringLower($sDetect) = "lzh compressed file" Then
+		$sDetect = _NormalizeOneLine($Type)
+	EndIf
+
+	If $sDetect = "" Or $sDetect = "-1" Or $sDetect = "0" Or StringLower($sDetect) = "unknown" _
+		Or StringLower($sDetect) = "gzip compressed file" Or StringLower($sDetect) = "xz compressed file" _
+		Or StringLower($sDetect) = "bzip2 compressed file" Or StringLower($sDetect) = "7-zip archive" _
+		Or StringLower($sDetect) = "lzh compressed file" Then
+		Switch $sExt
+			Case "zip"
+				$sDetect = "Zip archive"
+			Case "7z"
+				$sDetect = "7-Zip archive"
+			Case "rar"
+				$sDetect = "RAR archive"
+			Case "xar"
+				$sDetect = "XAR archive"
+			Case "lzh", "lha"
+				$sDetect = "LZH archive"
+			Case "gz"
+				$sDetect = "Gzip archive"
+			Case "bz2"
+				$sDetect = "BZip2 archive"
+			Case "xz"
+				$sDetect = "XZ archive"
+			Case "tar"
+				$sDetect = "TAR archive"
+			Case "iso"
+				$sDetect = "ISO image"
+			Case Else
+				$sDetect = "unknown"
+		EndSwitch
+	EndIf
+
+	Local $sExtractor = $g_sExtractorWinner
+	If $sExtractor = "" Then
+		Local $sDisp = StringLower(_NormalizeOneLine($sArcDisp))
+		Local $sTypeNorm = StringLower(_NormalizeOneLine($Type))
+		Local $sDetectNorm = StringLower(_NormalizeOneLine($sDetect))
+
+		If StringInStr($sDisp, "inno") Then
+			$sExtractor = "innounp/innoextract"
+		ElseIf StringInStr($sDisp, "msi") Then
+			$sExtractor = "lessmsi/7z/msiexec"
+		ElseIf $sTypeNorm = StringLower(String($TYPE_GARBRO)) Or $sExt = "xp3" Or $sExt = "arc" Or $sExt = "pck" Then
+			$sExtractor = "GARbro"
+		ElseIf $sTypeNorm = StringLower(String($TYPE_VIDEO)) Or $sTypeNorm = StringLower(String($TYPE_VIDEO_CONVERT)) _
+			Or StringInStr($sDetectNorm, "video file") Or StringInStr($sDetectNorm, "audio file") _
+			Or $sExt = "mp4" Or $sExt = "mkv" Or $sExt = "avi" Or $sExt = "wmv" Or $sExt = "mp3" _
+			Or $sExt = "flac" Or $sExt = "wav" Or $sExt = "ogg" Then
+			$sExtractor = "ffmpeg"
+		ElseIf $sFinalStatus = "unknownexe" Then
+			$sExtractor = "unsupported"
+		Else
+			$sExtractor = "7z"
+		EndIf
+	EndIf
+
+	; Final detect-label cleanup for noisy detector strings.
+	Local $sDetectLower = StringLower(_NormalizeOneLine($sDetect))
+	Local $sArcDispLower = StringLower(_NormalizeOneLine($sArcDisp))
+	Local $sTypeLower = StringLower(_NormalizeOneLine(_FiletypeGet(False)))
+	If StringInStr($sDetectLower, "nullsoft") Or StringInStr($sDetectLower, "nsis") Then
+		$sDetect = "NSIS installer"
+
+	ElseIf StringInStr($sDetectLower, "7-zip sfx archive") Then
+		$sDetect = "7-Zip SFX archive"
+
+	ElseIf StringInStr($sDetectLower, "7-zip installer package") Then
+		If StringInStr($sArcDispLower, "gzip") Or StringInStr($sTypeLower, "gzip") Then
+			$sDetect = "TAR.GZ archive"
+		ElseIf StringInStr($sArcDispLower, "xz") Or StringInStr($sTypeLower, "xz") Then
+			$sDetect = "TAR.XZ archive"
+		ElseIf $sExt <> "exe" Then
+			$sDetect = "7-Zip archive"
+		EndIf
+
+	ElseIf StringInStr($sDetectLower, "nuget package") Or StringInStr($sArcDispLower, "nuget package") Then
+		$sDetect = "NuGet package"
+
+	ElseIf StringInStr($sDetectLower, ".zip archive") Or StringInStr($sDetectLower, "zip compressed archive") _
+		Or StringInStr($sArcDispLower, ".zip archive") Or StringInStr($sArcDispLower, "zip compressed archive") _
+		Or StringInStr($sTypeLower, ".zip archive") Or StringInStr($sTypeLower, "zip compressed archive") _
+		Or ($sExt = "bin" And $sExtractor = "7z" And $sFinalStatus = "success") Then
+		$sDetect = "Zip archive"
+
+	ElseIf (StringInStr($sDetectLower, "tar.gz") Or StringInStr($sDetectLower, "gzip") _
+		Or StringInStr($sArcDispLower, "tar.gz") Or StringInStr($sArcDispLower, "gzip") _
+		Or StringInStr($sTypeLower, "tar.gz") Or StringInStr($sTypeLower, "gzip")) _
+		And (StringRight($sExtFull, 7) = ".tar.gz" Or StringRight($sExtFull, 4) = ".tgz" Or $sExt = "exe" Or $sExt = "msi") Then
+		$sDetect = "TAR.GZ archive"
+
+	ElseIf (StringInStr($sDetectLower, "tar.xz") Or StringInStr($sDetectLower, "xz") _
+		Or StringInStr($sArcDispLower, "tar.xz") Or StringInStr($sArcDispLower, "xz") _
+		Or StringInStr($sTypeLower, "tar.xz") Or StringInStr($sTypeLower, "xz")) _
+		And (StringRight($sExtFull, 7) = ".tar.xz" Or StringRight($sExtFull, 4) = ".txz") Then
+		$sDetect = "TAR.XZ archive"
+
+	ElseIf $sFinalStatus = "unknownexe" Then
+		$sDetect = "Custom/unsupported EXE"
+	EndIf
+
+	If $sFinalStatus = "unknownexe" Then
+		$sExtractor = "unsupported"
+	EndIf
+
+	Local $sSummaryStatus = _NormalizeOneLine($sFinalStatus)
+	If $sSummaryStatus = "unknownexe" Then $sSummaryStatus = "unsupported"
+	Cout("SUMMARY: " & _NormalizeOneLine($sInput) & " -> " & _NormalizeOneLine($sDetect) & " -> " & _NormalizeOneLine($sExtractor) & " -> " & $sSummaryStatus)
+EndFunc
+
 ; Handle program termination with appropriate error message
 Func terminate($status, $fname = '', $arctype = '', $arcdisp = '')
 	Local $bLogSaved = False, $exitcode = 0, $sFileType = _FiletypeGet(False), $shortStatus = ($status = $STATUS_SUCCESS)? $arctype: $status
@@ -4615,6 +4925,12 @@ Func terminate($status, $fname = '', $arctype = '', $arcdisp = '')
 	If $createdir And $status <> $STATUS_SUCCESS And DirGetSize($outdir) = 0 Then DirRemove($outdir, 1)
 
 	If ($exitcode == 1 Or $exitcode == 3 Or $exitcode == 4 Or $exitcode == 12) And $fileext <> "dll" Then GUI_Feedback_Prompt()
+
+	If $status = $STATUS_SUCCESS Then
+		LogPerFileSummary("success", $arcdisp)
+	ElseIf $status <> $STATUS_SILENT And $status <> $STATUS_BATCH And $status <> $STATUS_SYNTAX And $status <> $STATUS_FILEINFO Then
+		LogPerFileSummary($status, $arcdisp)
+	EndIf
 
 	Cout("Terminating - Status: " & $status)
 
@@ -8401,7 +8717,7 @@ Func GUI_Plugins_Install($aPluginInfo, $sPath)
 	; Determine filetype
 	Local $sExtension = StringRight($sPath, 3)
 	If $sExtension = ".7z" Or $sExtension = "rar" Or $sExtension = "zip" Then ; Unpack archive
-		Local $command = $cmd & $7z & ($aPluginInfo[5] == ''? ' x': ' e') & ($aPluginInfo[8] == 0? '': ' -p"' & $aPluginInfo[8] & '"')
+		Local $command = $cmd & $7z & ($aPluginInfo[5] == ''? ' x -aou -y': ' e -aou -y') & ($aPluginInfo[8] == 0? '': ' -p"' & $aPluginInfo[8] & '"')
 		If $aPluginInfo[5] <> "" Then ; Build include command for each file needed
 			For $sFile In StringSplit($aPluginInfo[5], "|", 2)
 				$command &= " -ir!" & $sFile
