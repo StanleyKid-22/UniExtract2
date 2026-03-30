@@ -3,8 +3,8 @@
 #AutoIt3Wrapper_Outfile=.\UniExtract.exe
 #AutoIt3Wrapper_Res_Description=Universal Extractor
 #AutoIt3Wrapper_Res_ProductName=Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=2.1.0.0
-#AutoIt3Wrapper_Res_ProductVersion=2.1.0.0
+#AutoIt3Wrapper_Res_Fileversion=2.2.0.0
+#AutoIt3Wrapper_Res_ProductVersion=2.2.0.0
 #AutoIt3Wrapper_Res_CompanyName=Legroom.net
 #AutoIt3Wrapper_Res_Language=1033
 #AutoIt3Wrapper_Res_LegalCopyright=GNU General Public License v2
@@ -71,8 +71,8 @@
 #include "Pie.au3"
 
 Const $name = "Universal Extractor"
-Const $sVersion = "2.1.0 RC6"
-Const $sVersionId = "2R6"
+Const $sVersion = "2.2.0 RC7"
+Const $sVersionId = "2R7"
 Const $sCodename = "New Start"
 Const $title = $name & " " & $sVersion
 Const $sUrlWebsiteOriginal = "https://www.legroom.net/software/uniextract"
@@ -518,7 +518,11 @@ Func IsExe()
 
 	FileScan_Trid()
 	CheckExt()
-	If check7z(0, False, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_7Z, "7-Zip " & t('TERM_INSTALLER') & " " & t('TERM_PACKAGE'))
+	If Not ($g_sPrimaryDetectScanner = "Detect It Easy" And StringInStr($g_sPrimaryDetectMatch, "Inno Setup")) Then
+		If check7z(0, False, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_7Z, "7-Zip " & t('TERM_INSTALLER') & " " & t('TERM_PACKAGE'))
+	Else
+		Cout("Skipping 7zip probe because primary detector identified Inno Setup")
+	EndIf
 	FileScan_UnixFile()
 	ResolveStrictPipeline()
 
@@ -1176,6 +1180,30 @@ Func FileScan_MediaInfo()
 	_DeleteTrayMessageBox()
 EndFunc
 
+Func _SanitizeDieOutput($sText)
+	If StringIsSpace($sText) Then Return $sText
+
+	Local $aLines = StringSplit(StringStripCR($sText), @LF, 1)
+	If @error Or Not IsArray($aLines) Then Return $sText
+
+	Local $sOut = ""
+
+	For $i = 1 To $aLines[0]
+		Local $line = StringStripWS($aLines[$i], 3)
+		If $line = "" Then ContinueLoop
+
+		Local $sLow = StringLower($line)
+
+		If StringRegExp($line, '(?i)\.sg:\s*\d+:\s*(typeerror|syntaxerror|referenceerror):') Then ContinueLoop
+		If StringInStr($sLow, "unknown return type") Then ContinueLoop
+		If StringInStr($sLow, "register the type with qscrip") Then ContinueLoop
+
+		$sOut &= $line & @CRLF
+	Next
+
+	Return StringStripWS($sOut, 3)
+EndFunc
+
 ; Scan file with Detect It Easy (DiE), fallback to Exeinfo PE
 Func FileScan_ExeInfo($bUseCmd = $extract)
 	Local $sFileType = "", $sScanner = "Detect It Easy"
@@ -1184,44 +1212,50 @@ Func FileScan_ExeInfo($bUseCmd = $extract)
 	_CreateTrayMessageBox(t('SCANNING_EXE', "Detect It Easy (DiE)"))
 
 	If FileExists($diec_path) Then
-		; Run Detect It Easy from its own folder so db/scripts resolve correctly.
-		; Use -r for richer text output and merge stderr into stdout because some DIE builds
-		; write script/runtime messages there.
 		Local $sDieWorkDir = $bindir & "die"
-		Local $sDieCmd = $diec & ' -r "' & $file & '" 2>&1'
-		$sFileType = FetchStdout($sDieCmd, $sDieWorkDir, @SW_HIDE, 0, False, False, False)
-		If @error Then $sFileType = ""
+		Local $sDieLog = $logdir & "diec.log"
+		FileDelete($sDieLog)
+		RunWait(@ComSpec & ' /d /c ""' & $diec_path & '" -r "' & $file & '" > "' & $sDieLog & '" 2>&1"', $sDieWorkDir, @SW_HIDE)
+		If FileExists($sDieLog) Then
+			$sFileType = _FileRead($sDieLog, True)
+		Else
+			$sFileType = ""
+		EndIf
 
 		If Not StringIsSpace($sFileType) Then
 			Cout("Detect It Easy raw output:" & @CRLF & $sFileType)
 
-			; Normalize DIE output and accept it if it contains a strong known signature.
-			Local $sDieNorm = StringLower(StringStripWS(StringReplace(StringReplace($sFileType, @CR, " "), @LF, " "), 7))
-			If StringInStr($sDieNorm, "installer: inno setup module") _
-				Or StringInStr($sDieNorm, "data: inno setup installer data") _
-				Or StringInStr($sDieNorm, "installer: nullsoft") _
-				Or StringInStr($sDieNorm, "nsis") _
-				Or StringInStr($sDieNorm, "installshield") _
-				Or StringInStr($sDieNorm, "windows installer") _
-				Or StringInStr($sDieNorm, "msi") _
-				Or StringInStr($sDieNorm, "7-zip sfx") Then
-				Cout("Detect It Easy produced usable output")
-			Else
-				Cout("Detect It Easy raw output was not considered usable")
+			If _IsBrokenDieOutput($sFileType) Then
+				Cout("Detect It Easy raw output was rejected as broken/error output")
 				$sFileType = ""
+			Else
+				$sFileType = _SanitizeDieOutput($sFileType)
+				Cout("Detect It Easy sanitized output:" & @CRLF & $sFileType)
+
+				Local $sDieNormalized = _NormalizeDetectorOutput($sFileType, "Detect It Easy")
+				Local $bDieStrong = _IsStrongPrimaryDetectorHit($sDieNormalized)
+
+				If $bDieStrong Then
+					Cout("Detect It Easy produced usable output (strong hit)")
+					$sFileType = $sDieNormalized
+				Else
+					Cout("Detect It Easy produced usable output (non-strong hit)")
+					$sFileType = $sDieNormalized
+				EndIf
 			EndIf
 		EndIf
 	EndIf
 
-	If StringIsSpace($sFileType) Then
+If StringIsSpace($sFileType) Then
 		Cout("Detect It Easy returned no usable output, falling back to Exeinfo PE")
 		$sScanner = "Exeinfo PE"
-		If $bUseCmd Then ; Use log command line for best speed
+
+		If $bUseCmd Then
 			Local Const $LogFile = $logdir & "exeinfo.log"
 			RunWait($exeinfope & ' "' & $file & '*" /sx /log:"' & $LogFile & '"', $bindir, @SW_HIDE)
 			$sFileType = _FileRead($LogFile, True)
 			If StringInStr($sFileType, "File corrupted or Buffer Error") Or StringIsSpace($sFileType) Then Return FileScan_ExeInfo(False)
-		Else ; In scan only mode run and read GUI fields to get additional information on how to extract
+		Else
 			$aReturn = OpenExeInfo()
 			$TimerStart = TimerInit()
 
@@ -1230,7 +1264,7 @@ Func FileScan_ExeInfo($bUseCmd = $extract)
 				Sleep(200)
 				$sFileType = ControlGetText($aReturn[0], "", "TEdit6")
 				$TimerDiff = TimerDiff($TimerStart)
-				If $TimerDiff > $Timeout Then ExitLoop
+				If $TimerDiff > ($Timeout * 1000) Then ExitLoop
 			WEnd
 
 			$sFileType &= @CRLF & @CRLF & ControlGetText($aReturn[0], "", "TEdit5")
@@ -1241,17 +1275,16 @@ Func FileScan_ExeInfo($bUseCmd = $extract)
 
 	_DeleteTrayMessageBox()
 
-	If StringInStr($sFileType, $filenamefull) Then $sFileType = StringTrimLeft(StringStripWS(StringReplace($sFileType, $filenamefull, ""), 1), 2)
+	If StringInStr($sFileType, $filenamefull) Then
+		$sFileType = StringTrimLeft(StringStripWS(StringReplace($sFileType, $filenamefull, ""), 1), 2)
+	EndIf
 
-	; Return if file is too big
 	If StringInStr($sFileType, "Skipped") Then Return
 
-	; Do not display unknown file type scan result in scan only mode
 	If Not $extract And ($sScanner = "Exeinfo PE" And StringInStr($sFileType, "file is not EXE or DLL")) Then Return
 
 	_FiletypeAdd($sScanner, $sFileType)
 
-	; Return filetype without matching if specified
 	If Not $extract Then Return $sFileType
 
 	Local $sMatchType = _NormalizeDetectorOutput($sFileType, $sScanner)
@@ -1259,14 +1292,18 @@ Func FileScan_ExeInfo($bUseCmd = $extract)
 	$g_sPrimaryDetectMatch = $sMatchType
 	$g_sPrimaryDetectScanner = $sScanner
 	$g_bPrimaryStrongHit = _IsStrongPrimaryDetectorHit($sMatchType)
+
 	If $g_bPrimaryStrongHit Then
-		Cout("Primary detector strong match: " & StringReplace($sMatchType, @CRLF, " | "))
-		LogDetectionWinner($sScanner, $sMatchType)
+		Local $sWinnerType = $sMatchType
+		If $sScanner = "Detect It Easy" Then $sWinnerType = _SummarizeDieDetection($sMatchType)
+		Cout("Primary detector strong match: " & StringReplace($sWinnerType, @CRLF, " | "))
+		LogDetectionWinner($sScanner, $sWinnerType)
+	Else
+		Cout("Primary detector non-strong match: " & StringReplace($sMatchType, @CRLF, " | "))
 	EndIf
 
 	If $g_bStrictPipeline Then Return $sFileType
 
-	; Match known patterns
 	Select
 		Case StringInStr($sMatchType, "Inno Setup")
 			checkInno()
@@ -1275,151 +1312,106 @@ Func FileScan_ExeInfo($bUseCmd = $extract)
 			extract($TYPE_ACE, t('TERM_SFX') & " ACE " & t('TERM_ARCHIVE'))
 
 		Case StringInStr($sMatchType, "Actual Installer")
-			extract($TYPE_ACTUAL, 'Actual Installer ' & t('TERM_PACKAGE'))
+			extract($TYPE_ACTUAL)
 
 		Case StringInStr($sMatchType, "Advanced Installer")
-			extract($TYPE_AI, 'Advanced Installer ' & t('TERM_PACKAGE'))
+			extract($TYPE_ADVINST)
 
 		Case StringInStr($sMatchType, "FreeArc")
-			extract($TYPE_FREEARC, 'FreeArc ' & t('TERM_ARCHIVE'))
+			extract($TYPE_ARC)
 
 		Case StringInStr($sMatchType, "CreateInstall")
-			extract($TYPE_CI, 'CreateInstall ' & t('TERM_INSTALLER'))
+			extract($TYPE_CREATEINSTALL)
 
 		Case StringInStr($sMatchType, "Excelsior Installer")
-			extract($TYPE_EI, 'Excelsior Installer ' & t('TERM_INSTALLER'))
+			extract($TYPE_EXCELSIOR)
 
 		Case StringInStr($sMatchType, "Ghost Installer Studio")
-			extract($TYPE_GHOST, 'Ghost Installer Studio ' & t('TERM_INSTALLER'))
+			extract($TYPE_GHOST)
 
-		Case StringInStr($sMatchType, "Gentee Installer") Or StringInStr($sMatchType, "Installer VISE")
-			checkIE()
+		Case StringInStr($sMatchType, "Gentee Installer")
+			extract($TYPE_GENTEE)
+
+		Case StringInStr($sMatchType, "Installer VISE")
+			extract($TYPE_VISE)
 
 		Case StringInStr($sMatchType, "Setup Factory")
-			CheckTotalObserver('Setup Factory ' & t('TERM_INSTALLER'))
-			checkIE()
+			extract($TYPE_SETUPFACTORY)
 
 		Case StringInStr($sMatchType, "install4j")
-			BmsExtract("install4j")
+			extract($TYPE_INSTALL4J)
 
-		; Needs to be before InstallShield
 		Case StringInStr($sMatchType, "InstallAware")
-			extract($TYPE_7Z, 'InstallAware ' & t('TERM_INSTALLER') & ' ' & t('TERM_PACKAGE'))
+			extract($TYPE_INSTALLAWARE)
 
 		Case StringInStr($sMatchType, "Install Creator/Pro")
-			extract($TYPE_CIC, 'Clickteam Install Creator ' & t('TERM_INSTALLER'))
+			extract($TYPE_INSTALLCREATOR)
 
 		Case StringInStr($sMatchType, "InstallScript Setup Launcher")
-			extract($TYPE_ISCRIPT, 'InstallScript ' & t('TERM_INSTALLER'))
+			extract($TYPE_INSTALLSHIELD3)
 
 		Case StringInStr($sMatchType, "InstallShield")
-			extract($TYPE_ISEXE, 'InstallShield ' & t('TERM_INSTALLER'))
+			extract($TYPE_INSTALLSHIELD)
 
 		Case StringInStr($sMatchType, "KGB SFX")
-			extract($TYPE_KGB, t('TERM_SFX') & ' KGB ' & t('TERM_PACKAGE'))
-
-		Case StringInStr($sMatchType, "Microsoft Visual C++ 7.0") And StringInStr($sMatchType, "Custom") And Not StringInStr($sMatchType, "Hotfix")
-			extract($TYPE_VSSFX, 'Visual C++ ' & t('TERM_SFX') & ' ' & t('TERM_INSTALLER'))
-
-		Case StringInStr($sMatchType, "Microsoft Visual C++ 6.0") And StringInStr($sMatchType, "Custom")
-			extract($TYPE_VSSFX_PATH, 'Visual C++ ' & t('TERM_SFX') & '' & t('TERM_INSTALLER'))
+			extract($TYPE_KGB)
 
 		Case StringInStr($sMatchType, "www.molebox.com")
-			extract($TYPE_MOLE, 'Mole Box ' & t('TERM_CONTAINER'))
+			extract($TYPE_MOLEBOX)
 
 		Case StringInStr($sMatchType, "Netopsystems AG INSTALLER FEAD")
-			extract($TYPE_FEAD, 'Netopsystems FEAD ' & t('TERM_PACKAGE'))
+			extract($TYPE_FEAD)
 
 		Case StringInStr($sMatchType, "Nullsoft")
-			checkNSIS()
+			extract($TYPE_NSIS)
 
 		Case StringInStr($sMatchType, "RAR SFX")
-			extract($TYPE_RAR, t('TERM_SFX') & ' RAR ' & t('TERM_ARCHIVE'));
-
-		Case StringInStr($sMatchType, "Microsoft Windows Installer") Or StringInStr($sMatchType, "MSI Installer")
-			extract($TYPE_MSI, 'Windows Installer (MSI) ' & t('TERM_PACKAGE'))
+			extract($TYPE_RAR)
 
 		Case StringInStr($sMatchType, "RoboForm Installer")
-			extract($TYPE_ROBO, 'RoboForm ' & t('TERM_INSTALLER'))
+			extract($TYPE_ROBOFORM)
 
-		Case StringInStr($sMatchType, "WiX Installer")
-			extract($TYPE_WIX, 'WiX ' & t('TERM_INSTALLER'))
+		Case StringInStr($sMatchType, "Microsoft Windows Installer")
+			extract($TYPE_MSI)
 
-		Case StringInStr($sMatchType, "SPx Method") Or StringInStr($sMatchType, "Microsoft SFX CAB")
-			Local $arcdisp = t('TERM_SFX') & " Microsoft CAB " & t('TERM_ARCHIVE')
-			If StringInStr($sMatchType, "rename file *.exe as *.cab") Then
-				CreateRenamedCopy("cab")
-				check7z($arcdisp)
-			Else
-				extract($TYPE_CAB, $arcdisp)
-			EndIf
+		Case StringInStr($sMatchType, "SPx Method")
+			extract($TYPE_SPX)
 
-		Case StringInStr($sMatchType, "Overlay :  SWF flash object ver", 0)
-			extract($TYPE_SWFEXE, 'Shockwave Flash ' & t('TERM_CONTAINER'))
+		Case StringInStr($sMatchType, "Microsoft SFX CAB")
+			extract($TYPE_CAB)
 
-		Case StringInStr($sMatchType, "VMware ThinApp") Or StringInStr($sMatchType, "Thinstall") Or StringInStr($sMatchType, "ThinyApp Packager", 0)
-			extract($TYPE_THINSTALL, "ThinApp/Thinstall" & t('TERM_ARCHIVE'))
+		Case StringInStr($sMatchType, "Overlay :  SWF flash object ver")
+			extract($TYPE_SWF)
 
-		Case StringInStr($sMatchType, "Wise") Or StringInStr($sMatchType, "PEncrypt 4.0")
-			extract($TYPE_WISE, 'Wise Installer ' & t('TERM_PACKAGE'))
+		Case StringInStr($sMatchType, "VMware ThinApp") Or StringInStr($sMatchType, "Thinstall") Or StringInStr($sMatchType, "ThinyApp Packager")
+			extract($TYPE_THINSTALL)
 
-		Case StringInStr($sMatchType, "ZIP SFX") Or (StringInStr($sMatchType, "WinZip") And StringInStr($sMatchType, "Sfx ver"))
-			extract($TYPE_ZIP, t('TERM_SFX') & ' ZIP ' & t('TERM_ARCHIVE'))
+		Case StringInStr($sMatchType, "Wise Installer")
+			extract($TYPE_WISE)
+
+		Case StringInStr($sMatchType, "PEncrypt 4.0")
+			extract($TYPE_PENC4)
+
+		Case StringInStr($sMatchType, "ZIP SFX") Or StringInStr($sMatchType, "WinZip")
+			extract($TYPE_ZIP)
 
 		Case StringInStr($sMatchType, "Enigma Virtual Box")
-			extract($TYPE_ENIGMA, 'Enigma Virtual Box ' & t('TERM_PACKAGE'))
+			extract($TYPE_ENIGMA)
 
 		Case StringInStr($sMatchType, ".dmg  Mac OS")
-			extract($TYPE_7Z, "DMG " & t('TERM_IMAGE'))
+			extract($TYPE_DMG)
 
 		Case StringInStr($sMatchType, ".pak  Chromium format")
-			extract($TYPE_7Z, "Chromium Pak " & t('TERM_ARCHIVE'))
+			extract($TYPE_PAK)
 
 		Case StringInStr($sMatchType, "Explorer cache file")
-			extract($TYPE_7Z, "Explorer Thumbnail " & t('TERM_DATABASE'))
+			extract($TYPE_THUMBS)
 
-		Case StringInStr($sMatchType, "PyInstaller")
-			extract($TYPE_7Z, "PyInstaller " & t('TERM_PACKAGE'))
-
-		Case StringInStr($sMatchType, "MSCF Cab file detected") Or StringInStr($sMatchType, "VirtualBox Installer")
-			extract($TYPE_MSCF, "MSCF " & t('TERM_INSTALLER'))
-
-		; Route media files detected by Exeinfo/DiE directly to video extraction
-		Case StringInStr($sMatchType, "NOT EXE - .mp4") Or StringInStr($sMatchType, "NOT EXE - .m4v") Or _
-			 StringInStr($sMatchType, "MPEG-4") Or StringInStr($sMatchType, "QuickTime Movie") Or _
-			 StringInStr($sMatchType, "Matroska") Or StringInStr($sMatchType, "Windows Media (generic)") Or _
-			 StringInStr($sMatchType, "MPEG-2 Transport Stream") Or StringInStr($sMatchType, "Bink video") Or _
-			 StringInStr($sMatchType, "Smacker movie/video")
-			If StringInStr($sMatchType, "Bink video") Or StringInStr($sMatchType, "Smacker movie/video") Then
-				extract($TYPE_VIDEO_CONVERT, t('TERM_VIDEO') & ' ' & t('TERM_FILE'))
-			Else
-				extract($TYPE_VIDEO, t('TERM_VIDEO') & ' ' & t('TERM_FILE'))
-			EndIf
-
-		Case StringInStr($sMatchType, "aspack")
-			unpack($PACKER_ASPACK)
-
-		; Not supported
-		Case StringInStr($sMatchType, "Astrum InstallWizard") Or StringInStr($sMatchType, "clickteam") Or _
-			 StringInStr($sMatchType, "NE <- Windows 16bit") Or StringInStr($sMatchType, "Enigma Protector")
-			terminate($STATUS_NOTSUPPORTED, $file, $sFileType, $sFileType)
-
-		; Terminate if file cannot be unpacked
-		Case (StringInStr($sMatchType, "Not packed") And Not StringInStr($sMatchType, "Microsoft Visual C++")) Or _
-			  StringInStr($sMatchType, "ELF executable") Or StringInStr($sMatchType, "Microsoft Visual C# / Basic.NET") Or _
-			  StringInStr($sMatchType, "Autoit") Or StringInStr($sMatchType, "LE <- Linear Executable") Or _
-			  StringInStr($sMatchType, "NOT EXE - Empty file") Or StringInStr($sMatchType, "Native - System driver") Or _
-			  StringInStr($sMatchType, "Denuvo protector") Or StringInStr($sMatchType, "Kaspersky AV Pack") Or _
-			  StringInStr($sMatchType, "TASM / MASM / FASM - assembler")
-			terminate($STATUS_NOTPACKED, $file, $sFileType, $sFileType)
-
-		; Needs to be at the end, otherwise files might not be recognized
-		Case StringInStr($sMatchType, "upx") And Not StringInStr($sMatchType, "sign like")
-			unpack($PACKER_UPX)
-
-		Case Else
-			UserDefCompare($aExeinfoDefinitions, $sMatchType, "Exeinfo")
+		Case StringInStr($sMatchType, "VirtualBox Installer")
+			extract($TYPE_VIRTUALBOX)
 	EndSelect
+
+	Return $sFileType
 EndFunc
 
 ; Scan file with PEiD
@@ -1449,7 +1441,7 @@ Func FileScan_Peid($sType, $analyze = 1)
 		Sleep(100)
 		$sFileType = ControlGetText("PEiD v", "", "Edit2")
 		$TimerDiff = TimerDiff($TimerStart)
-		If $TimerDiff > $Timeout Then ExitLoop
+		If $TimerDiff > ($Timeout * 1000) Then ExitLoop
 	WEnd
 	WinClose("PEiD v")
 
@@ -1972,38 +1964,154 @@ Func UserDefCompare(ByRef $aDefinitions, $sFileType, $sSection)
 	Next
 EndFunc
 
+Func _IsBrokenDieOutput($sText)
+	If StringIsSpace($sText) Then Return True
+
+	Local $s = StringLower(StringStripWS(StringReplace(StringReplace($sText, @CR, " "), @LF, " "), 7))
+
+	If StringInStr($s, "installer:") _
+		Or StringInStr($s, "overlay:") _
+		Or StringInStr($s, "data:") _
+		Or StringInStr($s, "packer:") _
+		Or StringInStr($s, "protector:") _
+		Or StringInStr($s, "compiler:") _
+		Or StringInStr($s, "linker:") _
+		Or StringInStr($s, "sign tool:") _
+		Or StringInStr($s, "audio:") _
+		Or StringInStr($s, "video:") _
+		Or StringInStr($s, "format:") _
+		Or StringInStr($s, "archive:") _
+		Or StringInStr($s, "sfx:") Then
+		Return False
+	EndIf
+
+	If StringInStr($s, "typeerror:") Then Return True
+	If StringInStr($s, "syntaxerror:") Then Return True
+	If StringInStr($s, "referenceerror:") Then Return True
+	If StringInStr($s, "uncaught exception") Then Return True
+	If StringInStr($s, "cannot open") Then Return True
+	If StringInStr($s, "can't open") Then Return True
+	If StringInStr($s, "no such file") Then Return True
+	If StringInStr($s, "is not recognized as an internal or external command") Then Return True
+
+	If StringInStr($s, "warning:") Then
+		If Not StringInStr($s, "installer:") _
+			And Not StringInStr($s, "overlay:") _
+			And Not StringInStr($s, "data:") _
+			And Not StringInStr($s, "packer:") _
+			And Not StringInStr($s, "protector:") _
+			And Not StringInStr($s, "compiler:") _
+			And Not StringInStr($s, "linker:") _
+			And Not StringInStr($s, "sign tool:") _
+			And Not StringInStr($s, "audio:") _
+			And Not StringInStr($s, "video:") _
+			And Not StringInStr($s, "format:") _
+			And Not StringInStr($s, "archive:") _
+			And Not StringInStr($s, "sfx:") Then
+			Return True
+		EndIf
+	EndIf
+
+	Return False
+EndFunc
+
 ; Normalize primary detector output so existing Exeinfo-style matching continues to work
 Func _NormalizeDetectorOutput($sFileType, $sScanner = "")
 	If $sScanner <> "Detect It Easy" Then Return $sFileType
 
 	Local $sMatchType = $sFileType
+	Local $sNorm = StringLower($sFileType)
 
-	If StringInStr($sMatchType, "NSIS") And Not StringInStr($sMatchType, "Nullsoft") Then $sMatchType &= @CRLF & "Nullsoft"
-	If StringInStr($sMatchType, "Inno Setup") Then $sMatchType &= @CRLF & "Inno Setup"
-	If StringInStr($sMatchType, "InstallShield") Then $sMatchType &= @CRLF & "InstallShield"
-	If StringInStr($sMatchType, "MSI Installer") And Not StringInStr($sMatchType, "Microsoft Windows Installer") Then $sMatchType &= @CRLF & "Microsoft Windows Installer"
-	If StringInStr($sMatchType, "Installer database") And Not StringInStr($sMatchType, "Microsoft Windows Installer") Then $sMatchType &= @CRLF & "Microsoft Windows Installer"
-	If StringInStr($sMatchType, "Windows Installer XML Toolset") And Not StringInStr($sMatchType, "Microsoft Windows Installer") Then $sMatchType &= @CRLF & "Microsoft Windows Installer"
-	If StringInStr($sMatchType, "WiX Toolset") And Not StringInStr($sMatchType, "Microsoft Windows Installer") Then $sMatchType &= @CRLF & "Microsoft Windows Installer"
-	If StringInStr($sMatchType, "WiX") And Not StringInStr($sMatchType, "WiX Installer") Then $sMatchType &= @CRLF & "WiX Installer"
-	If StringInStr($sMatchType, "Advanced Installer") Then $sMatchType &= @CRLF & "Advanced Installer"
-	If StringInStr($sMatchType, "InstallAware") Then $sMatchType &= @CRLF & "InstallAware"
-	If StringInStr($sMatchType, "Setup Factory") Then $sMatchType &= @CRLF & "Setup Factory"
-	If StringInStr($sMatchType, "install4j") Then $sMatchType &= @CRLF & "install4j"
-	If StringInStr($sMatchType, "Wise") And Not StringInStr($sMatchType, "Wise Installer") Then $sMatchType &= @CRLF & "Wise Installer"
-	If StringInStr($sMatchType, "RAR") And StringInStr($sMatchType, "SFX") And Not StringInStr($sMatchType, "RAR SFX") Then $sMatchType &= @CRLF & "RAR SFX"
-	If StringInStr($sMatchType, "ZIP") And StringInStr($sMatchType, "SFX") And Not StringInStr($sMatchType, "ZIP SFX") Then $sMatchType &= @CRLF & "ZIP SFX"
-	If StringInStr($sMatchType, "CAB") And StringInStr($sMatchType, "SFX") And Not StringInStr($sMatchType, "Microsoft SFX CAB") Then $sMatchType &= @CRLF & "Microsoft SFX CAB"
-	If StringInStr($sMatchType, "Molebox") And Not StringInStr($sMatchType, "www.molebox.com") Then $sMatchType &= @CRLF & "www.molebox.com"
-	If StringInStr($sMatchType, "Thinstall") And Not StringInStr($sMatchType, "VMware ThinApp") Then $sMatchType &= @CRLF & "VMware ThinApp"
-	If StringInStr($sMatchType, "PyInstaller") Then $sMatchType &= @CRLF & "PyInstaller"
-	If StringInStr($sMatchType, "MSCF") And Not StringInStr($sMatchType, "MSCF Cab file detected") Then $sMatchType &= @CRLF & "MSCF Cab file detected"
-	If StringInStr($sMatchType, "UPX") And Not StringInStr($sMatchType, "upx") Then $sMatchType &= @CRLF & "upx"
-	If StringInStr($sMatchType, "ASPack") And Not StringInStr($sMatchType, "aspack") Then $sMatchType &= @CRLF & "aspack"
-	If StringInStr($sMatchType, ".NET") And Not StringInStr($sMatchType, "Microsoft Visual C# / Basic.NET") Then $sMatchType &= @CRLF & "Microsoft Visual C# / Basic.NET"
-	If StringInStr($sMatchType, "AutoIt") And Not StringInStr($sMatchType, "Autoit") Then $sMatchType &= @CRLF & "Autoit"
+	If StringInStr($sNorm, "nsis") And Not StringInStr($sMatchType, "Nullsoft") Then $sMatchType &= @CRLF & "Nullsoft"
+	If StringInStr($sNorm, "nullsoft") And Not StringInStr($sMatchType, "Nullsoft") Then $sMatchType &= @CRLF & "Nullsoft"
+
+	If StringInStr($sNorm, "inno setup") And Not StringInStr($sMatchType, "Inno Setup") Then $sMatchType &= @CRLF & "Inno Setup"
+
+	If StringInStr($sNorm, "installshield") And Not StringInStr($sMatchType, "InstallShield") Then $sMatchType &= @CRLF & "InstallShield"
+
+	If (StringInStr($sNorm, "msi installer") _
+		Or StringInStr($sNorm, "windows installer") _
+		Or StringInStr($sNorm, "installer database") _
+		Or StringInStr($sNorm, "microsoft installer (msi)") _
+		Or StringInStr($sNorm, "windows installer xml toolset") _
+		Or StringInStr($sNorm, "wix toolset")) _
+		And Not StringInStr($sMatchType, "Microsoft Windows Installer") Then
+		$sMatchType &= @CRLF & "Microsoft Windows Installer"
+	EndIf
+
+	If StringInStr($sNorm, "wix toolset installer") And Not StringInStr($sMatchType, "WiX Installer") Then $sMatchType &= @CRLF & "WiX Installer"
+	If StringInStr($sNorm, "advanced installer") And Not StringInStr($sMatchType, "Advanced Installer") Then $sMatchType &= @CRLF & "Advanced Installer"
+	If StringInStr($sNorm, "installaware") And Not StringInStr($sMatchType, "InstallAware") Then $sMatchType &= @CRLF & "InstallAware"
+	If StringInStr($sNorm, "setup factory") And Not StringInStr($sMatchType, "Setup Factory") Then $sMatchType &= @CRLF & "Setup Factory"
+	If StringInStr($sNorm, "install4j") And Not StringInStr($sMatchType, "install4j") Then $sMatchType &= @CRLF & "install4j"
+	If StringInStr($sNorm, "wise") And Not StringInStr($sMatchType, "Wise Installer") Then $sMatchType &= @CRLF & "Wise Installer"
+	If StringInStr($sNorm, "squirrel") And Not StringInStr($sMatchType, "Squirrel") Then $sMatchType &= @CRLF & "Squirrel"
+
+	If StringInStr($sNorm, "rar") And StringInStr($sNorm, "sfx") And Not StringInStr($sMatchType, "RAR SFX") Then $sMatchType &= @CRLF & "RAR SFX"
+	If StringInStr($sNorm, "zip") And StringInStr($sNorm, "sfx") And Not StringInStr($sMatchType, "ZIP SFX") Then $sMatchType &= @CRLF & "ZIP SFX"
+	If (StringInStr($sNorm, "7-zip sfx") Or StringInStr($sNorm, "sfx: 7-zip") Or StringInStr($sNorm, "archive: 7-zip")) _
+		And Not StringInStr($sMatchType, "7-Zip SFX") Then $sMatchType &= @CRLF & "7-Zip SFX"
+	If StringInStr($sNorm, "cab") And StringInStr($sNorm, "sfx") And Not StringInStr($sMatchType, "Microsoft SFX CAB") Then $sMatchType &= @CRLF & "Microsoft SFX CAB"
+
+	If StringInStr($sNorm, "molebox") And Not StringInStr($sMatchType, "www.molebox.com") Then $sMatchType &= @CRLF & "www.molebox.com"
+	If StringInStr($sNorm, "thinstall") And Not StringInStr($sMatchType, "VMware ThinApp") Then $sMatchType &= @CRLF & "VMware ThinApp"
+	If StringInStr($sNorm, "thinapp") And Not StringInStr($sMatchType, "VMware ThinApp") Then $sMatchType &= @CRLF & "VMware ThinApp"
+	If StringInStr($sNorm, "pyinstaller") And Not StringInStr($sMatchType, "PyInstaller") Then $sMatchType &= @CRLF & "PyInstaller"
+	If StringInStr($sNorm, "enigma virtual box") And Not StringInStr($sMatchType, "Enigma Virtual Box") Then $sMatchType &= @CRLF & "Enigma Virtual Box"
+
+	If StringInStr($sNorm, "mscf") And Not StringInStr($sMatchType, "MSCF Cab file detected") Then $sMatchType &= @CRLF & "MSCF Cab file detected"
+	If StringInStr($sNorm, "upx") And Not StringInStr($sMatchType, "upx") Then $sMatchType &= @CRLF & "upx"
+	If StringInStr($sNorm, "aspack") And Not StringInStr($sMatchType, "aspack") Then $sMatchType &= @CRLF & "aspack"
+
+	If StringInStr($sNorm, "autoit") And Not StringInStr($sMatchType, "Autoit") Then $sMatchType &= @CRLF & "Autoit"
 
 	Return $sMatchType
+EndFunc
+
+Func _SummarizeDieDetection($sText)
+	If StringIsSpace($sText) Then Return $sText
+
+	Local $aLines = StringSplit(StringStripCR($sText), @LF, 1)
+	If @error Or Not IsArray($aLines) Then Return $sText
+
+	Local $sInstaller = "", $sSfx = "", $sArchive = "", $sData = "", $sPacker = "", $sOverlay = ""
+
+	For $i = 1 To $aLines[0]
+		Local $line = StringStripWS($aLines[$i], 3)
+		If $line = "" Then ContinueLoop
+
+		If StringInStr($line, "Installer:", 2) = 1 And $sInstaller = "" Then
+			$sInstaller = $line
+		ElseIf StringInStr($line, "Sfx:", 2) = 1 And $sSfx = "" Then
+			$sSfx = $line
+		ElseIf StringInStr($line, "Archive:", 2) = 1 And $sArchive = "" Then
+			$sArchive = $line
+		ElseIf StringInStr($line, "Data:", 2) = 1 And $sData = "" Then
+			$sData = $line
+		ElseIf StringInStr($line, "Packer:", 2) = 1 And $sPacker = "" Then
+			$sPacker = $line
+		ElseIf StringInStr($line, "Overlay:", 2) = 1 And $sOverlay = "" Then
+			$sOverlay = $line
+		EndIf
+	Next
+
+	Local $sSummary = ""
+	If $sInstaller <> "" Then
+		$sSummary = $sInstaller
+		If $sData <> "" Then $sSummary &= @CRLF & $sData
+	ElseIf $sSfx <> "" Then
+		$sSummary = $sSfx
+		If $sArchive <> "" Then $sSummary &= @CRLF & $sArchive
+	ElseIf $sPacker <> "" Then
+		$sSummary = $sPacker
+		If $sOverlay <> "" Then $sSummary &= @CRLF & $sOverlay
+	ElseIf $sArchive <> "" Then
+		$sSummary = $sArchive
+	Else
+		Return $sText
+	EndIf
+
+	Return $sSummary
 EndFunc
 
 Func _HasCorroboratedInstallShieldHit()
@@ -2014,23 +2122,40 @@ Func _HasCorroboratedInstallShieldHit()
 	Return False
 EndFunc
 
-Func _IsStrongPrimaryDetectorHit($sMatchType)
-	If StringIsSpace($sMatchType) Then Return False
+Func _IsStrongPrimaryDetectorHit($sText)
+	If StringIsSpace($sText) Then Return False
 
-	Local Const $aStrongHits[] = [ _
-		"Inno Setup", "WinAce / SFX Factory", "Actual Installer", "Advanced Installer", "FreeArc", _
-		"CreateInstall", "Excelsior Installer", "Ghost Installer Studio", "Gentee Installer", _
-		"Installer VISE", "Setup Factory", "install4j", "InstallAware", "Install Creator/Pro", _
-		"InstallScript Setup Launcher", "InstallShield", "KGB SFX", "www.molebox.com", _
-		"Netopsystems AG INSTALLER FEAD", "Nullsoft", "RAR SFX", "RoboForm Installer", _
-		"Microsoft Windows Installer", "SPx Method", "Microsoft SFX CAB", "Overlay :  SWF flash object ver", _
-		"VMware ThinApp", "Thinstall", "ThinyApp Packager", "Wise Installer", "PEncrypt 4.0", _
-		"ZIP SFX", "WinZip", "Enigma Virtual Box", ".dmg  Mac OS", ".pak  Chromium format", _
-		"Explorer cache file", "VirtualBox Installer" ]
+	Local $s = StringLower($sText)
 
-	For $sNeedle In $aStrongHits
-		If StringInStr($sMatchType, $sNeedle) Then Return True
-	Next
+	If StringInStr($s, "inno setup") Then Return True
+	If StringInStr($s, "nullsoft") Then Return True
+	If StringInStr($s, "nsis") Then Return True
+	If StringInStr($s, "installshield") Then Return True
+	If StringInStr($s, "microsoft installer") Then Return True
+	If StringInStr($s, "windows installer") Then Return True
+	If StringInStr($s, "msi") And StringInStr($s, "installer") Then Return True
+	If StringInStr($s, "wix toolset installer") Then Return True
+	If StringInStr($s, "wix installer") Then Return True
+	If StringInStr($s, "advanced installer") Then Return True
+	If StringInStr($s, "installaware") Then Return True
+	If StringInStr($s, "setup factory") Then Return True
+	If StringInStr($s, "install4j") Then Return True
+	If StringInStr($s, "wise installer") Then Return True
+	If StringInStr($s, "squirrel") Then Return True
+
+	If StringInStr($s, "7-zip sfx") Then Return True
+	If StringInStr($s, "sfx: 7-zip") Then Return True
+	If StringInStr($s, "archive: 7-zip") Then Return True
+	If StringInStr($s, "rar sfx") Then Return True
+	If StringInStr($s, "zip sfx") Then Return True
+	If StringInStr($s, "microsoft sfx cab") Then Return True
+	If StringInStr($s, "cab archive") And StringInStr($s, "overlay:") Then Return True
+
+	If StringInStr($s, "www.molebox.com") Then Return True
+	If StringInStr($s, "vmware thinapp") Then Return True
+	If StringInStr($s, "thinstall") Then Return True
+	If StringInStr($s, "pyinstaller") Then Return True
+	If StringInStr($s, "enigma virtual box") Then Return True
 
 	Return False
 EndFunc
@@ -2097,7 +2222,7 @@ Func RipExeInfo($tempoutdir, $sCommand)
 		Sleep(200)
 		$return = _GUICtrlListBox_FindString($hControl, "--- End of file ---", True)
 		If $return < 0 Then $return = _GUICtrlListBox_FindString($hControl, "-- End of file --", True)
-		If TimerDiff($TimerStart) > $Timeout Then ExitLoop
+		If TimerDiff($TimerStart) > ($Timeout * 1000) Then ExitLoop
 	WEnd
 
 	Local $success = _GUICtrlListBox_FindString($hControl, "--- Not found , sorry ---", True) == -1
@@ -2743,7 +2868,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 					Sleep(100)
 					If WinExists("7z SFX Archives splitter warning") Then WinClose("7z SFX Archives splitter warning")
 					$TimerDiff = TimerDiff($TimerStart)
-					If $TimerDiff > $Timeout Then ExitLoop
+					If $TimerDiff > ($Timeout * 1000) Then ExitLoop
 				Until FileExists($filedir & "\" & $filename & ".txt") Or WinExists("7z SFX Archives splitter error")
 
 				ProcessClose("7ZSplit.exe")
@@ -2994,7 +3119,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			While Not StringInStr($return, "file saved")
 				Sleep(200)
 				$return = ControlGetText($aReturn[0], "", "TEdit5")
-				If TimerDiff($TimerStart) > $Timeout Then ExitLoop
+				If TimerDiff($TimerStart) > ($Timeout * 1000) Then ExitLoop
 			WEnd
 
 			CloseExeInfo($aReturn)
@@ -4786,6 +4911,16 @@ Func LogPerFileSummary($sFinalStatus, $sArcDisp = "")
 		$sDetect = "Custom/unsupported EXE"
 	EndIf
 
+	If $sExt = "mp3" And StringInStr(StringLower(_NormalizeOneLine($sDetect)), "game file") Then
+		$sDetect = "MP3 audio file"
+	ElseIf $sExt = "flac" And StringInStr(StringLower(_NormalizeOneLine($sDetect)), "game file") Then
+		$sDetect = "FLAC audio file"
+	ElseIf $sExt = "ogg" And StringInStr(StringLower(_NormalizeOneLine($sDetect)), "game file") Then
+		$sDetect = "OGG audio file"
+	ElseIf $sExt = "wav" And StringInStr(StringLower(_NormalizeOneLine($sDetect)), "game file") Then
+		$sDetect = "WAV audio file"
+	EndIf
+
 	If $sFinalStatus = "unknownexe" Then
 		$sExtractor = "unsupported"
 	EndIf
@@ -5881,7 +6016,7 @@ Func FetchStdout($f, $sWorkingDir, $show_flag = @SW_HIDE, $iLine = 0, $bOutput =
 
 	Do
 		Sleep(1)
-		If TimerDiff($TimerStart) > $Timeout Then ExitLoop
+		If TimerDiff($TimerStart) > ($Timeout * 1000) Then ExitLoop
 		$return &= StdoutRead($run)
 	Until @error
 
