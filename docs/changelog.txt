@@ -1,3 +1,37 @@
+2.3.0 RC 7 (2026/04/10)
+  Updated innounp to version 2.67.7
+  
+	1) New media-aware skip guard before secondary probes
+	Practical effect:
+	- Less probe noise in logs.
+	- Lower chance that media files get unnecessarily sent through ISO/game-related checks.
+	- Faster/cleaner pipeline for MP4/MKV/MP3/AAC/FLAC/Vorbis/etc.
+
+	2) Strict fallback now recognizes audio explicitly
+	Practical effect:
+	- Audio files are now routed directly to `extract($TYPE_AUDIO, ...)` instead of falling deeper into generic fallback logic.
+
+	3) Detect It Easy logging was trimmed
+	Practical effect:
+	- Cleaner logs.
+	- Same overall DiE normalization pipeline, but with less verbose output.
+
+	4) `extract()` avoids junk “File type is:” lines
+	Practical effect:
+	- Avoids noisy or meaningless log lines like invalid/placeholder file-type values.
+
+	5) MSI lessmsi diagnostics were slightly cleaned
+	Practical effect:
+	- Slightly less MSI log noise.
+	- MSI behavior appears effectively the same here; this looks like a cosmetic logging cleanup, not a pipeline rewrite.
+
+2.2.0 RC 7 (2026/04/07)
+  Updated DiE signature files to 2026-04-06
+  Updated userdb.txt signature file for PEiD and ExeInfoPE to 2025/12/28 (but the main detection work is made by DiE)
+  Updated Lessmsi to 2.12.9
+  Updated Pea to 1.3.0
+  Updated Trid triddefs.trd signature file to 2026/04/04
+
 2.2.0.0 RC 7 (2026)
   Fix DiE (Detect-it-easy) file detection issue
   Minnor other changes
