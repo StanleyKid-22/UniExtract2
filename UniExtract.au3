@@ -3,8 +3,8 @@
 #AutoIt3Wrapper_Outfile=.\UniExtract.exe
 #AutoIt3Wrapper_Res_Description=Universal Extractor
 #AutoIt3Wrapper_Res_ProductName=Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=2.2.0.0
-#AutoIt3Wrapper_Res_ProductVersion=2.2.0.0
+#AutoIt3Wrapper_Res_Fileversion=2.3.0.0
+#AutoIt3Wrapper_Res_ProductVersion=2.3.0.0
 #AutoIt3Wrapper_Res_CompanyName=Legroom.net
 #AutoIt3Wrapper_Res_Language=1033
 #AutoIt3Wrapper_Res_LegalCopyright=GNU General Public License v2
@@ -71,7 +71,7 @@
 #include "Pie.au3"
 
 Const $name = "Universal Extractor"
-Const $sVersion = "2.2.0 RC7"
+Const $sVersion = "2.3.0 RC7"
 Const $sVersionId = "2R7"
 Const $sCodename = "New Start"
 Const $title = $name & " " & $sVersion
@@ -475,9 +475,13 @@ Func StartExtraction()
 	EndIf
 
 	; Else perform additional extraction methods
-	CheckIso()
-	CheckGame()
-	CheckTotalObserver()
+	If _ShouldSkipNonFatalProbesForPrimaryMatch() Then
+		Cout("Skipping non-fatal ISO/game probes because primary detector already identified media")
+	Else
+		CheckIso()
+		CheckGame()
+		CheckTotalObserver()
+	EndIf
 
 	; Use file extension if signature not recognized
 	CheckExt()
@@ -1223,14 +1227,11 @@ Func FileScan_ExeInfo($bUseCmd = $extract)
 		EndIf
 
 		If Not StringIsSpace($sFileType) Then
-			Cout("Detect It Easy raw output:" & @CRLF & $sFileType)
-
 			If _IsBrokenDieOutput($sFileType) Then
 				Cout("Detect It Easy raw output was rejected as broken/error output")
 				$sFileType = ""
 			Else
 				$sFileType = _SanitizeDieOutput($sFileType)
-				Cout("Detect It Easy sanitized output:" & @CRLF & $sFileType)
 
 				Local $sDieNormalized = _NormalizeDetectorOutput($sFileType, "Detect It Easy")
 				Local $bDieStrong = _IsStrongPrimaryDetectorHit($sDieNormalized)
@@ -2521,6 +2522,29 @@ Func CheckTotalObserver($arcdisp = 0)
 EndFunc
 
 ; If detection fails, try to determine file type by extension
+Func _ShouldSkipNonFatalProbesForPrimaryMatch()
+	If $g_sPrimaryDetectMatch = "" Then Return False
+
+	Local $bKnownMediaExt = StringInStr("|mp3|aac|m4a|flac|ogg|oga|wav|wma|mp4|m4v|mkv|avi|wmv|mpg|mpeg|ts|mov|bik|smk|", "|" & StringLower($fileext) & "|") > 0
+	If Not $g_bPrimaryStrongHit And Not $bKnownMediaExt Then Return False
+
+	Local $sSaved = $g_sPrimaryDetectMatch
+	If StringInStr($sSaved, "NOT EXE - .mp4") Or StringInStr($sSaved, "NOT EXE - .m4v") Or _
+		 StringInStr($sSaved, "MP4 Video") Or StringInStr($sSaved, "MP4 Base Media") Or _
+		 StringInStr($sSaved, "ISO base media container") Or StringInStr($sSaved, "MPEG-4") Or _
+		 StringInStr($sSaved, "QuickTime Movie") Or StringInStr($sSaved, "Matroska") Or _
+		 StringInStr($sSaved, "Windows Media (generic)") Or StringInStr($sSaved, "MPEG-2 Transport Stream") Or _
+		 StringInStr($sSaved, "Bink video") Or StringInStr($sSaved, "Smacker movie/video") Or _
+		 StringInStr($sSaved, "MP3") Or _
+		 StringInStr($sSaved, "AAC") Or StringInStr($sSaved, "FLAC") Or _
+		 StringInStr($sSaved, "Vorbis") Or StringInStr($sSaved, "Dolby Digital stream") Or _
+		 StringInStr($sSaved, "Audio file", 0) Then
+		Return True
+	EndIf
+
+	Return False
+EndFunc
+
 Func ResolveStrictPipeline()
 	If Not $extract Then Return False
 
@@ -2547,6 +2571,10 @@ Func ResolveStrictPipeline()
 			Else
 				extract($TYPE_VIDEO, t('TERM_VIDEO') & ' ' & t('TERM_FILE'))
 			EndIf
+		ElseIf StringInStr($sSaved, "MP3") Or StringInStr($sSaved, "AAC") Or StringInStr($sSaved, "FLAC") Or _
+			 StringInStr($sSaved, "Vorbis") Or StringInStr($sSaved, "Dolby Digital stream") Or _
+			 StringInStr($sSaved, "Audio file", 0) Then
+			extract($TYPE_AUDIO, t('TERM_AUDIO') & ' ' & t('TERM_FILE'))
 		ElseIf StringInStr($sSaved, "DOCTYPE : html") Or StringInStr($sSaved, "HTML") Then
 			terminate($STATUS_NOTPACKED, $file, $fileext, $sSaved)
 		Else
@@ -2805,7 +2833,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 	$success = $RESULT_UNKNOWN
 
 	Cout("Starting " & $arctype & " extraction")
-	If $arcdisp <> 0 Then Cout("File type is: " & $arcdisp)
+	If $arcdisp <> 0 And $arcdisp <> -1 And $arcdisp <> "" Then Cout("File type is: " & $arcdisp)
 
 	If $arcdisp == 0 Then $arcdisp = "." & $fileext & " " & t('TERM_FILE')
 	If $arcdisp <> -1 Then _CreateTrayMessageBox(t('EXTRACTING') & @CRLF & $arcdisp)
@@ -3404,8 +3432,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 				RunWait(@ComSpec & ' /d /c ""' & $msi_lessmsi & ' x "' & $file & '" "' & $tempoutdir & '""', $filedir, @SW_HIDE)
 
 				; Optional diagnostics only - do not gate extraction on list output.
-				Cout("MSI pipeline: collecting lessmsi list diagnostics")
-				$sLessmsiList = FetchStdout($msi_lessmsi & ' l -t File "' & $file & '"', $outdir)
+					$sLessmsiList = FetchStdout($msi_lessmsi & ' l -t File "' & $file & '"', $outdir)
 				If StringInStr($sLessmsiList, "File,Component_,FileName") Then
 					Cout("MSI pipeline: lessmsi list diagnostics OK")
 				Else
