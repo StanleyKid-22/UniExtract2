@@ -3,8 +3,8 @@
 #AutoIt3Wrapper_Outfile=.\UniExtract.exe
 #AutoIt3Wrapper_Res_Description=Universal Extractor
 #AutoIt3Wrapper_Res_ProductName=Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=2.3.0.0
-#AutoIt3Wrapper_Res_ProductVersion=2.3.0.0
+#AutoIt3Wrapper_Res_Fileversion=2.4.0.0
+#AutoIt3Wrapper_Res_ProductVersion=2.4.0.0
 #AutoIt3Wrapper_Res_CompanyName=Legroom.net
 #AutoIt3Wrapper_Res_Language=1033
 #AutoIt3Wrapper_Res_LegalCopyright=GNU General Public License v2
@@ -71,7 +71,7 @@
 #include "Pie.au3"
 
 Const $name = "Universal Extractor"
-Const $sVersion = "2.3.0 RC7"
+Const $sVersion = "2.4.0 RC7"
 Const $sVersionId = "2R7"
 Const $sCodename = "New Start"
 Const $title = $name & " " & $sVersion
@@ -5260,13 +5260,27 @@ Func AddToBatch()
 	Local $cmdline = GetCmd()
 	If @error Then Return Cout("Failed to add file to batch queue: invalid file parameter: " & $file)
 
-	Local $hFile = FileOpen($batchQueue, $FO_UNICODE + $FO_CREATEPATH + $FO_APPEND)
-	If @error Then Return Cout("Failed to open batch queue")
-;~ 	FileSetPos($hFile, 0, 0)
-	Local $sBatchQueueContent = FileRead($hFile)
+	Local $hLock = _BatchQueue_Lock()
+	If $hLock = 0 Then Return Cout("Failed to lock batch queue")
+
+	Local $aQueue = _BatchQueue_ReadArray_NoLock()
+	Local $sBatchQueueContent = _BatchQueue_ArrayToText($aQueue)
+	Local $bDuplicate = False
+	For $i = 0 To UBound($aQueue) - 1
+		If $aQueue[$i] = $cmdline Then
+			$bDuplicate = True
+			ExitLoop
+		EndIf
+	Next
 
 	Local $bAddFile = True
-	If StringInStr($sBatchQueueContent, $cmdline) Then
+	If $bDuplicate Then
+		If $silentmode Or $batchEnabled Then
+			Cout("Skipping duplicate batch file " & $filenamefull)
+			_BatchQueue_Unlock($hLock)
+			EnableBatchMode()
+			Return
+		EndIf
 		$bAddFile = CustomPrompt('BATCH_DUPLICATE', $filenamefull)
 	Else
 		; Only add one file if multipart archive
@@ -5275,41 +5289,32 @@ Func AddToBatch()
 
 	If Not $bAddFile Then
 		Cout("Not adding duplicate file " & $filenamefull)
-		FileClose($hFile)
+		_BatchQueue_Unlock($hLock)
 		Return
 	EndIf
 
-	FileWrite($hFile, $cmdline & @CRLF)
-	FileClose($hFile)
+		_ArrayAdd($aQueue, $cmdline)
+	If Not _BatchQueue_WriteArray_NoLock($aQueue) Then
+		_BatchQueue_Unlock($hLock)
+		Return Cout("Failed to save batch queue")
+	EndIf
+
+	_BatchQueue_Unlock($hLock)
 	Cout("File added to batch queue: " & $cmdline)
 	EnableBatchMode()
 EndFunc
 
 ; Read batch queue from file
 Func GetBatchQueue()
-	Local $hFile = FileOpen($batchQueue, $FO_UNICODE)
-	If $hFile = -1 Then
+	Local $hLock = _BatchQueue_Lock()
+	If $hLock = 0 Then
 		$queueArray = 0
 		If $guimain Then GUICtrlSetData($BatchBut, t('BATCH_BUT'))
 		Return 0
 	EndIf
 
-	Local $sContent = FileRead($hFile)
-	FileClose($hFile)
-
-	$sContent = StringReplace($sContent, @CR, "")
-	Local $aLines = StringSplit($sContent, @LF, 1)
-
-	Local $aClean[0]
-	For $i = 1 To $aLines[0]
-		Local $sLine = StringStripWS($aLines[$i], 3)
-		$sLine = StringReplace($sLine, ChrW(65279), "")
-		If $sLine <> "" Then
-			_ArrayAdd($aClean, $sLine)
-		EndIf
-	Next
-
-	$queueArray = $aClean
+	$queueArray = _BatchQueue_ReadArray_NoLock()
+	_BatchQueue_Unlock($hLock)
 
 	Local $iSize = 0
 	If IsArray($queueArray) Then $iSize = UBound($queueArray)
@@ -5320,6 +5325,7 @@ Func GetBatchQueue()
 		Return 1
 	EndIf
 
+	$queueArray = 0
 	If $guimain Then GUICtrlSetData($BatchBut, t('BATCH_BUT'))
 	Return 0
 EndFunc
@@ -5327,56 +5333,105 @@ EndFunc
 ; Write batch queue array to file
 Func SaveBatchQueue()
 	Cout("Saving batch queue")
-	Local $hFile = FileOpen($batchQueue, $FO_UNICODE + $FO_CREATEPATH + $FO_OVERWRITE)
-	If $hFile = -1 Then Return SetError(1, 0, 0)
-
-	Local $sContent = ""
-	If IsArray($queueArray) Then
-		For $i = 0 To UBound($queueArray) - 1
-			Local $sLine = StringStripWS($queueArray[$i], 3)
-			If $sLine <> "" Then
-				If $sContent <> "" Then $sContent &= @CRLF
-				$sContent &= $sLine
-			EndIf
-		Next
-	EndIf
-
-	FileWrite($hFile, $sContent)
-	FileClose($hFile)
-	Return 1
+	Local $hLock = _BatchQueue_Lock()
+	If $hLock = 0 Then Return SetError(1, 0, 0)
+	Local $iResult = _BatchQueue_WriteArray_NoLock($queueArray)
+	_BatchQueue_Unlock($hLock)
+	Return $iResult
 EndFunc
 
 ; Returns first element of batch queue
 Func BatchQueuePop()
-	If Not IsArray($queueArray) Or UBound($queueArray) < 1 Then GetBatchQueue()
+	Local $element = "", $bHadLateItems = False
 
-	If Not IsArray($queueArray) Or UBound($queueArray) < 1 Then
+	Local $hLock = _BatchQueue_Lock()
+	If $hLock = 0 Then
+		Cout("Failed to lock batch queue")
+		Return
+	EndIf
+
+	$queueArray = _BatchQueue_ReadArray_NoLock()
+	Local $aClean = $queueArray
+	Local $i = 0
+	While $i < UBound($aClean)
+		Local $sLine = StringStripWS($aClean[$i], 3)
+		$sLine = StringReplace($sLine, ChrW(65279), "")
+		If $sLine = "" Then
+			_ArrayDelete($aClean, $i)
+			ContinueLoop
+		EndIf
+
+		Local $aMatch = StringRegExp($sLine, '^"([^"]+)"', 1)
+		If @error Or UBound($aMatch) < 1 Or Not FileExists($aMatch[0]) Then
+			Cout("Skipping invalid batch element: " & $sLine)
+			_ArrayDelete($aClean, $i)
+			ContinueLoop
+		EndIf
+
+		$element = $sLine
+		ExitLoop
+	WEnd
+
+	If UBound($aClean) <> UBound($queueArray) Then
+		If Not _BatchQueue_WriteArray_NoLock($aClean) Then
+			_BatchQueue_Unlock($hLock)
+			Cout("Failed to save cleaned batch queue")
+			Return
+		EndIf
+		$queueArray = $aClean
+	EndIf
+
+	_BatchQueue_Unlock($hLock)
+
+	If $element = "" Then
+		Local $hTimer = TimerInit()
+		Do
+			Sleep(100)
+			Local $hLateLock = _BatchQueue_Lock()
+			If $hLateLock <> 0 Then
+				Local $aLate = _BatchQueue_ReadArray_NoLock()
+				_BatchQueue_Unlock($hLateLock)
+				If UBound($aLate) > 0 Then
+					$bHadLateItems = True
+					ExitLoop
+				EndIf
+			EndIf
+		Until TimerDiff($hTimer) > 5000
+
+		If $bHadLateItems Then
+			Cout("Detected late batch queue additions")
+			Return BatchQueuePop()
+		EndIf
+
 		Cout("Batch queue empty")
 		EnableBatchMode(False)
 		If FileExists($fileScanLogFile) Then ShellExecute($fileScanLogFile)
 		Local $return = _FileRead($logdir & "errorlog.txt", True)
 		If $return <> "" Then MsgBox($iTopmost + 48, $name, t('BATCH_FINISH', $return))
 		If $bOptKeepOpen Then Run(@ScriptFullPath)
-	Else
-		Local $element = StringStripWS($queueArray[0], 3)
-		$element = StringReplace($element, ChrW(65279), "")
-		_ArrayDelete($queueArray, 0)
-		Cout("Next batch element: " & $element)
-		SaveBatchQueue()
-
-		If $element = "" Then
-			Cout("Skipping empty batch element")
-			Return BatchQueuePop()
-		EndIf
-
-		Local $aMatch = StringRegExp($element, '^"([^"]+)"', 1)
-		If @error Or UBound($aMatch) < 1 Or Not FileExists($aMatch[0]) Then
-			Cout("Skipping invalid batch element: " & $element)
-			Return BatchQueuePop()
-		EndIf
-
-		Run('"' & @ScriptFullPath & '" ' & $element, @ScriptDir)
+		Return
 	EndIf
+
+	Cout("Next batch element: " & $element)
+	Local $iPid = Run('"' & @ScriptFullPath & '" ' & $element, @ScriptDir)
+	If $iPid = 0 Then
+		Cout("Failed to start next batch element: " & $element)
+		Return
+	EndIf
+
+	$hLock = _BatchQueue_Lock()
+	If $hLock = 0 Then
+		Cout("Failed to relock batch queue after starting next element")
+		Return
+	EndIf
+
+	If Not _BatchQueue_RemoveFirstExact_NoLock($element) Then
+		Cout("Failed to remove started batch element from queue: " & $element)
+	Else
+		$queueArray = _BatchQueue_ReadArray_NoLock()
+	EndIf
+
+	_BatchQueue_Unlock($hLock)
 EndFunc
 
 ; Enable batch mode
@@ -5391,8 +5446,13 @@ Func EnableBatchMode($bEnable = True)
 			GUICtrlSetState($clearitem, $GUI_ENABLE)
 		EndIf
 	Else
-		; Delete empty batch queue file
-		_FileDelete($batchQueue)
+		; Delete batch queue file only if it is still empty under lock
+		Local $hLock = _BatchQueue_Lock()
+		If $hLock <> 0 Then
+			Local $aQueue = _BatchQueue_ReadArray_NoLock()
+			If UBound($aQueue) < 1 Then _FileDelete($batchQueue)
+			_BatchQueue_Unlock($hLock)
+		EndIf
 
 		If $guimain Then
 			GUICtrlSetOnEvent($GUI_Main_Ok, "GUI_OK")
@@ -5404,6 +5464,90 @@ Func EnableBatchMode($bEnable = True)
 
 	$batchEnabled = $bEnable
 	SavePref("batchenabled", Number($batchEnabled))
+EndFunc
+
+Func _BatchQueue_GetMutexName()
+	Return $name & " " & $sVersion & " BatchQueue"
+EndFunc
+
+Func _BatchQueue_Lock($iTimeout = 15000)
+	Local $aCreate = DllCall("kernel32.dll", "handle", "CreateMutexW", "ptr", 0, "bool", False, "wstr", _BatchQueue_GetMutexName())
+	If @error Or Not IsArray($aCreate) Or $aCreate[0] = 0 Then Return 0
+
+	Local $hLock = $aCreate[0]
+	Local $aWait = DllCall("kernel32.dll", "dword", "WaitForSingleObject", "handle", $hLock, "dword", $iTimeout)
+	If @error Or Not IsArray($aWait) Then
+		DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hLock)
+		Return 0
+	EndIf
+
+	If $aWait[0] = 0 Or $aWait[0] = 0x80 Then Return $hLock
+
+	DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hLock)
+	Return 0
+EndFunc
+
+Func _BatchQueue_Unlock($hLock)
+	If $hLock = 0 Then Return
+	DllCall("kernel32.dll", "bool", "ReleaseMutex", "handle", $hLock)
+	DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hLock)
+EndFunc
+
+Func _BatchQueue_ReadArray_NoLock()
+	Local $aClean[0]
+	Local $hFile = FileOpen($batchQueue, $FO_UNICODE)
+	If $hFile = -1 Then Return $aClean
+
+	Local $sContent = FileRead($hFile)
+	FileClose($hFile)
+
+	$sContent = StringReplace($sContent, @CR, "")
+	Local $aLines = StringSplit($sContent, @LF, 1)
+	For $i = 1 To $aLines[0]
+		Local $sLine = StringStripWS($aLines[$i], 3)
+		$sLine = StringReplace($sLine, ChrW(65279), "")
+		If $sLine <> "" Then _ArrayAdd($aClean, $sLine)
+	Next
+
+	Return $aClean
+EndFunc
+
+Func _BatchQueue_ArrayToText(ByRef $aQueue)
+	Local $sContent = ""
+	If IsArray($aQueue) Then
+		For $i = 0 To UBound($aQueue) - 1
+			Local $sLine = StringStripWS($aQueue[$i], 3)
+			If $sLine <> "" Then
+				If $sContent <> "" Then $sContent &= @CRLF
+				$sContent &= $sLine
+			EndIf
+		Next
+	EndIf
+	Return $sContent
+EndFunc
+
+Func _BatchQueue_WriteArray_NoLock(ByRef $aQueue)
+	Local $hFile = FileOpen($batchQueue, $FO_UNICODE + $FO_CREATEPATH + $FO_OVERWRITE)
+	If $hFile = -1 Then Return SetError(1, 0, 0)
+
+	Local $sContent = _BatchQueue_ArrayToText($aQueue)
+	If $sContent <> "" Then FileWrite($hFile, $sContent)
+	FileClose($hFile)
+	Return 1
+EndFunc
+
+Func _BatchQueue_RemoveFirstExact_NoLock($sNeedle)
+	Local $aQueue = _BatchQueue_ReadArray_NoLock()
+	If Not IsArray($aQueue) Then Return 0
+
+	For $i = 0 To UBound($aQueue) - 1
+		If $aQueue[$i] = $sNeedle Then
+			_ArrayDelete($aQueue, $i)
+			Return _BatchQueue_WriteArray_NoLock($aQueue)
+		EndIf
+	Next
+
+	Return 0
 EndFunc
 
 ; Detect language of user's operating system
