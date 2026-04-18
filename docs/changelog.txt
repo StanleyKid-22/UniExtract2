@@ -1,3 +1,20 @@
+2.6.2 RC 7
+  Uniextract program path with spaces fixed
+  Updated Trid triddefs.trd signature file to 2026/04/17
+  Updated DiE signature files to 2026-04-17
+  Updated chdman to version 287b
+  Fixed pipeline for some InstallShield installers
+  Fixed pipeline for some Delphi installers
+  New Atlantis FILES custom-installer extractor was added.
+  InstallShield handling was rewritten into a safer automatic pipeline.
+  A lot of path quoting / spaces-in-path command calls were fixed.
+  Password-protected archive handling is stricter, especially for batch/unattended mode.
+  Corrupt archive detection is stricter, so false “success” is less likely.
+  Multipart archives (.7z.001, .part1.rar, .r00, .z01, etc.) are handled more intelligently.
+  Per-file summary labeling was improved.
+  Several external-tool calls were cleaned up for reliability.
+
+
 2.3.0 RC 7 (2026/04/10)
   Updated innounp to version 2.67.7
   
@@ -24,7 +41,7 @@
 	Practical effect:
 	- Slightly less MSI log noise.
 	- MSI behavior appears effectively the same here; this looks like a cosmetic logging cleanup, not a pipeline rewrite.
-
+	
 2.2.0 RC 7 (2026/04/07)
   Updated DiE signature files to 2026-04-06
   Updated userdb.txt signature file for PEiD and ExeInfoPE to 2025/12/28 (but the main detection work is made by DiE)
