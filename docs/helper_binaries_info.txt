@@ -1,6 +1,6 @@
 //If this file is not displayed correctly open it with notepad++ or any other source code editor
 
-Universal Extractor 2.3.0 RC 7
+Universal Extractor 2.7.0 RC 7
 ----------------------------
 
 Binaries:
