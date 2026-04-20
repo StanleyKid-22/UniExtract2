@@ -1,3 +1,16 @@
+2.7.0 RC 7
+Switched main update URLs from Bioruebe server to gvp9000 GitHub Pages
+Disabled all visible feedback UI / feedback prompt / feedback sending
+Improved update index parsing to tolerate CRLF and trailing blank lines
+Reworked plugin download links to use explicit per-plugin URLs
+Updated About dialog text, timestamp display, and icon branding
+Reworked FFmpeg updater to use direct GitHub release downloads
+Removed old geturl.php + 7z extraction FFmpeg workflow
+Added direct FFmpeg file existence validation after download
+Fixed download progress text from incorrect kb to bytes
+Added protection against invalid/zero remote file size
+Minor code formatting cleanup
+
 2.6.2 RC 7
   Uniextract program path with spaces fixed
   Updated Trid triddefs.trd signature file to 2026/04/17
