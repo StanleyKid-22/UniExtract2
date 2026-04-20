@@ -3,13 +3,13 @@
 #AutoIt3Wrapper_Outfile=.\UniExtract.exe
 #AutoIt3Wrapper_Res_Description=Universal Extractor
 #AutoIt3Wrapper_Res_ProductName=Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=2.6.2.0
-#AutoIt3Wrapper_Res_ProductVersion=2.6.2.0
+#AutoIt3Wrapper_Res_Fileversion=2.7.0.0
+#AutoIt3Wrapper_Res_ProductVersion=2.7.0.0
 #AutoIt3Wrapper_Res_CompanyName=Legroom.net
 #AutoIt3Wrapper_Res_Language=1033
 #AutoIt3Wrapper_Res_LegalCopyright=GNU General Public License v2
 #AutoIt3Wrapper_Res_Field=Author|Jared Breland, Bioruebe, gvp9000
-#AutoIt3Wrapper_Res_Field=Homepage|https://bioruebe.com/dev/uniextract/
+#AutoIt3Wrapper_Res_Field=Homepage|https://github.com/gvp9000/UniExtract2
 #AutoIt3Wrapper_Res_Field=Timestamp|%date%
 #AutoIt3Wrapper_Res_HiDpi=y
 #AutoIt3Wrapper_Run_AU3Check=n
@@ -71,20 +71,20 @@
 #include "Pie.au3"
 
 Const $name = "Universal Extractor"
-Const $sVersion = "2.6.2 RC7"
+Const $sVersion = "2.7.0 RC7"
 Const $sVersionId = "2R7"
 Const $sCodename = "New Start"
 Const $title = $name & " " & $sVersion
 Const $sUrlWebsiteOriginal = "https://www.legroom.net/software/uniextract"
-Const $sUrlWebsite = "https://bioruebe.com/dev/uniextract"
-Const $sUrlGithub = "https://github.com/Bioruebe/UniExtract2"
-Const $sUrlUpdateStable = "https://update.bioruebe.com/uniextract/data/"
-Const $sUrlUpdateNightly = "https://update.bioruebe.com/uniextract/nightly/"
+Const $sUrlWebsite = "https://github.com/gvp9000/UniExtract2"
+Const $sUrlGithub = "https://github.com/gvp9000/UniExtract2"
+Const $sUrlUpdateStable = "https://gvp9000.github.io/UniExtract2/updates/data/"
+Const $sUrlUpdateNightly = "https://gvp9000.github.io/UniExtract2/updates/nightly/"
 Const $sUrlGetUrl = "https://update.bioruebe.com/uniextract/geturl.php?q="
 Const $sUrlFeedback = "https://support.bioruebe.com/uniextract/upload.php"
 Const $sUrlStats = "https://stat.bioruebe.com/uniextract/stats.php?a="
 Const $sUrlPrivacyPolicy = "https://bioruebe.com/dev/uniextract/privacypolicy"
-Const $sUrlCommandLineHelp = "https://github.com/Bioruebe/UniExtract2/blob/master/docs/COMMAND-LINE.md"
+Const $sUrlCommandLineHelp = "https://github.com/gvp9000/UniExtract2/blob/master/docs/COMMAND-LINE.md"
 Const $bindir = @ScriptDir & "\bin\"
 Const $langdir = @ScriptDir & "\lang\"
 Const $defdir = @ScriptDir & "\def\"
@@ -5478,7 +5478,7 @@ Func terminate($status, $fname = '', $arctype = '', $arcdisp = '')
 	; Delete empty output directory if failed
 	If $createdir And $status <> $STATUS_SUCCESS And DirGetSize($outdir) = 0 Then DirRemove($outdir, 1)
 
-	If ($exitcode == 1 Or $exitcode == 3 Or $exitcode == 4 Or $exitcode == 12) And $fileext <> "dll" Then GUI_Feedback_Prompt()
+	; If ($exitcode == 1 Or $exitcode == 3 Or $exitcode == 4 Or $exitcode == 12) And $fileext <> "dll" Then GUI_Feedback_Prompt() ; Feedback UI disabled in this fork
 
 	If $status = $STATUS_SUCCESS Then
 		LogPerFileSummary("success", $arcdisp)
@@ -7199,12 +7199,23 @@ Func _UpdateGetIndex($sURL = "", $bSilent = $silentmode)
 	Local $return = _INetGetSource($sURL)
 	If @error Then Return _UpdateCheckFailed($bSilent)
 
-	Local $aReturn = StringSplit($return, @LF, 2)
-;~ 	_ArrayDisplay($aReturn)
+	; Normalize CRLF and trim outer whitespace so a trailing blank line
+	; in the hosted index does not cause the update check to fail.
+	$return = StringStripWS(StringReplace($return, @CR, ""), 3)
 
-	For $i = 0 To UBound($aReturn) - 1
-		$aReturn[$i] = StringSplit($aReturn[$i], ",", 2)
+	Local $aLines = StringSplit($return, @LF, 2)
+	Local $aReturn[0]
+;~ 	_ArrayDisplay($aLines)
+
+	For $i = 0 To UBound($aLines) - 1
+		Local $sLine = StringStripWS($aLines[$i], 3)
+		If $sLine = "" Then ContinueLoop
+
+		Local $aLine = StringSplit($sLine, ",", 2)
 		If @error Then Return _UpdateCheckFailed($bSilent)
+
+		ReDim $aReturn[UBound($aReturn) + 1]
+		$aReturn[UBound($aReturn) - 1] = $aLine
 	Next
 
 	Return $aReturn
@@ -7476,7 +7487,7 @@ Func CreateGUI()
 	Local $helpmenu = GUICtrlCreateMenu(t('MENU_HELP_LABEL'))
 	Local $updateitem = GUICtrlCreateMenuItem(t('MENU_HELP_UPDATE_LABEL'), $helpmenu)
 	GUICtrlCreateMenuItem("", $helpmenu)
-	Local $feedbackitem = GUICtrlCreateMenuItem(t('MENU_HELP_FEEDBACK_LABEL'), $helpmenu)
+	; Local $feedbackitem = GUICtrlCreateMenuItem(t('MENU_HELP_FEEDBACK_LABEL'), $helpmenu) ; Feedback UI disabled in this fork
 	Local $pluginsitem = GUICtrlCreateMenuItem(t('MENU_HELP_PLUGINS_LABEL'), $helpmenu)
 	Local $firststartitem = GUICtrlCreateMenuItem(t('FIRSTSTART_TITLE'), $helpmenu)
 	GUICtrlCreateMenuItem("", $helpmenu)
@@ -7569,7 +7580,7 @@ Func CreateGUI()
 	GUICtrlSetOnEvent($contextitem, "GUI_ContextMenu")
 	GUICtrlSetOnEvent($prefsitem, "GUI_Prefs")
 	GUICtrlSetOnEvent($pluginsitem, "GUI_Plugins")
-	GUICtrlSetOnEvent($feedbackitem, "GUI_Feedback")
+	; GUICtrlSetOnEvent($feedbackitem, "GUI_Feedback") ; Feedback UI disabled in this fork
 	GUICtrlSetOnEvent($firststartitem, "GUI_FirstStart")
 	GUICtrlSetOnEvent($updateitem, "SafeCheckUpdate")
 	GUICtrlSetOnEvent($webitem, "GUI_Website_Original")
@@ -8043,7 +8054,7 @@ Func GUI_Prefs()
 	Global $unicodecheckopt = _GUICtrlCreateCheckbox('PREFS_CHECK_UNICODE_LABEL', $checkUnicode, $iPosX, $iPosY, $iControlWidth)
 	Global $appendextopt = _GUICtrlCreateCheckbox('PREFS_APPEND_EXT_LABEL', $appendext, $iPosX, $iPosY, $iControlWidth)
 	Global $idOptCreateLog = _GUICtrlCreateCheckbox('PREFS_LOG_LABEL', $bOptCreateLog, $iPosX, $iPosY, $iControlWidth)
-	Global $idOptFeedbackPrompt = _GUICtrlCreateCheckbox('PREFS_FEEDBACK_PROMPT_LABEL', $bOptAskForFeedback == 1, $iPosX, $iPosY, $iControlWidth, 20, $BS_AUTO3STATE)
+	; Global $idOptFeedbackPrompt = _GUICtrlCreateCheckbox('PREFS_FEEDBACK_PROMPT_LABEL', $bOptAskForFeedback == 1, $iPosX, $iPosY, $iControlWidth, 20, $BS_AUTO3STATE) ; Feedback UI disabled in this fork
 	Global $idOptSendStats = _GUICtrlCreateCheckbox('PREFS_SEND_STATS_LABEL', $bOptSendStats, $iPosX, $iPosY, $iControlWidth)
 	Global $idOptBetaUpdates = _GUICtrlCreateCheckbox('PREFS_BETA_UPDATES_LABEL', $bOptNightlyUpdates, $iPosX, $iPosY, $iControlWidth)
 	GUICtrlCreateGroup("", -99, -99, 1, 1)
@@ -8059,7 +8070,7 @@ Func GUI_Prefs()
 	GUICtrlSetTip($unicodecheckopt, t('PREFS_CHECK_UNICODE_TOOLTIP'))
 	GUICtrlSetTip($appendextopt, t('PREFS_APPEND_EXT_TOOLTIP'))
 	GUICtrlSetTip($idOptGameMode, t('PREFS_HIDE_STATUS_FULLSCREEN_TOOLTIP'))
-	GUICtrlSetTip($idOptFeedbackPrompt, t('PREFS_FEEDBACK_PROMPT_TOOLTIP'))
+	; GUICtrlSetTip($idOptFeedbackPrompt, t('PREFS_FEEDBACK_PROMPT_TOOLTIP')) ; Feedback UI disabled in this fork
 	GUICtrlSetTip($idOptSendStats, t('PREFS_SEND_STATS_TOOLTIP'))
 	GUICtrlSetTip($idOptExtractVideo, t('PREFS_VIDEOTRACK_TOOLTIP'))
 	GUICtrlSetTip($idOptDeleteSourceFile[$OPTION_ASK], t('PREFS_SOURCE_FILES_OPT_KEEP_TOOLTIP'))
@@ -8067,7 +8078,7 @@ Func GUI_Prefs()
 
 	; Set properties
 	GUICtrlSetState($idOk, $GUI_DEFBUTTON)
-	If $bOptAskForFeedback == 2 Then GUICtrlSetState($idOptFeedbackPrompt, $GUI_INDETERMINATE)
+	; If $bOptAskForFeedback == 2 Then GUICtrlSetState($idOptFeedbackPrompt, $GUI_INDETERMINATE) ; Feedback UI disabled in this fork
 	If $iCleanup == $OPTION_DELETE Then GUICtrlSetState($idOptDeleteAdditionalFiles, $GUI_CHECKED)
 
 	; Update interval
@@ -8143,8 +8154,9 @@ Func GUI_Prefs_OK()
 	$appendext = Number(_IsChecked($appendextopt))
 	$bOptHideStatusBoxIfFullscreen = Number(_IsChecked($idOptGameMode))
 	$bOptOpenOutDir = Number(_IsChecked($idOptOpenOutDir))
-	$bOptAskForFeedback = Number(GUICtrlRead($idOptFeedbackPrompt))
-	If $bOptAskForFeedback > 2 Then $bOptAskForFeedback = 0
+	; $bOptAskForFeedback = Number(GUICtrlRead($idOptFeedbackPrompt)) ; Feedback UI disabled in this fork
+	; If $bOptAskForFeedback > 2 Then $bOptAskForFeedback = 0 ; Feedback UI disabled in this fork
+	$bOptAskForFeedback = 0
 	$bOptCreateLog = Number(_IsChecked($idOptCreateLog))
 	$bOptExtractVideo = Number(_IsChecked($idOptExtractVideo))
 	$bOptRememberGuiSizePosition = Number(_IsChecked($idOptRememberGuiSizePosition))
@@ -8413,6 +8425,7 @@ EndFunc
 
 ; Create Feedback GUI
 Func GUI_Feedback()
+	Return ; Feedback UI disabled in this fork
 	Local Const $iWidth = 402, $iHeight = 508
 
 	; Attach input file information
@@ -8517,6 +8530,7 @@ EndFunc
 
 ; Exit feedback GUI if OK clicked
 Func GUI_Feedback_Send($FB_Sys, $FB_File, $FB_Output, $FB_Message)
+	Return False ; Feedback sending disabled in this fork
 	If $FB_File = "" And $FB_Output = "" And $FB_Message = "" Then Return MsgBox($iTopmost + 16, $name, t('FEEDBACK_EMPTY'))
 
 	GUISetState(@SW_HIDE, $FB_GUI)
@@ -8595,6 +8609,7 @@ EndFunc
 
 ; Ask for feedback
 Func GUI_Feedback_Prompt()
+	Return ; Feedback prompt disabled in this fork
 	If Not ($bOptAskForFeedback And $extract) Or $silentmode Then Return
 	If $bOptAskForFeedback == 2 Then Return GUI_Feedback()
 
@@ -9318,9 +9333,9 @@ Func GUI_Error_WithFeedbackButton($sTitle, $sText)
 	GUICtrlSetFont(-1, 14, 400, 4, $FONT_ARIAL)
 	GUICtrlCreateLabel($sText, 102, 42, 301, 104)
 	Local $idOk = GUICtrlCreateButton(t('OK_BUT'), 336, 158, 81, 25)
-	Local $idFeedback = GUICtrlCreateButton(t('FEEDBACK_TITLE_LABEL'), 101, 158, 81, 25)
+	; Local $idFeedback = GUICtrlCreateButton(t('FEEDBACK_TITLE_LABEL'), 101, 158, 81, 25) ; Feedback UI disabled in this fork
 
-	_GuiSetScale($hGui, $iWidth, $iHeight, $idLabel, $idFeedback)
+	_GuiSetScale($hGui, $iWidth, $iHeight, $idLabel, $idOk)
 	GUISetState(@SW_SHOW)
 
 	While 1
@@ -9328,10 +9343,10 @@ Func GUI_Error_WithFeedbackButton($sTitle, $sText)
 		Switch $nMsg
 			Case $GUI_EVENT_CLOSE, $idOk
 				ExitLoop
-			Case $idFeedback
-				GUIDelete($hGui)
-				GUI_Feedback()
-				ExitLoop
+			; Case $idFeedback
+				; GUIDelete($hGui)
+				; GUI_Feedback()
+				; ExitLoop ; Feedback UI disabled in this fork
 		EndSwitch
 	WEnd
 
@@ -9370,9 +9385,9 @@ Func GUI_Error_UnknownExt()
 	EndIf
 
 	Local $idOk = GUICtrlCreateButton(t('OK_BUT'), 395, $iPosY, 81, 25)
-	Local $idFeedback = GUICtrlCreateButton(t('FEEDBACK_TITLE_LABEL'), 95, $iPosY, 81, 25)
+	; Local $idFeedback = GUICtrlCreateButton(t('FEEDBACK_TITLE_LABEL'), 95, $iPosY, 81, 25) ; Feedback UI disabled in this fork
 
-	_GuiSetScale($hGui, $iWidth, $iHeight, $idLabel, $idFeedback)
+	_GuiSetScale($hGui, $iWidth, $iHeight, $idLabel, $idOk)
 	GUISetState(@SW_SHOW)
 
 	While True
@@ -9383,10 +9398,10 @@ Func GUI_Error_UnknownExt()
 				Local $aReturn = _GUICtrlEdit_GetSel($idEdit)
 				Local $iLen = $aReturn[1] - $aReturn[0]
 				ClipPut($iLen < 1? $sFileType: StringMid($sFileType, $aReturn[0], $iLen + 1))
-			Case $idFeedback
-				GUIDelete($hGui)
-				GUI_Feedback()
-				ExitLoop
+			; Case $idFeedback
+				; GUIDelete($hGui)
+				; GUI_Feedback()
+				; ExitLoop ; Feedback UI disabled in this fork
 			Case $idImage
 				Run((FileExists($diegui_path)? $diegui: $exeinfope) & ' "' & $file & '"', $filedir)
 		EndSwitch
@@ -9443,12 +9458,12 @@ Func GUI_Plugins($hParent = 0, $sSelection = 0)
 	; Define plugins
 	; executable|name|description|filetypes|filemask|extractionfilter|outdir|newfilename|password
 	Local $aPluginInfo[12][9] = [ _
-		[$arc_conv, 'arc_conv', t('PLUGIN_ARC_CONV'), 'nsa, wolf, xp3, ypf', 'arc_conv_r*.7z', 'arc_conv.exe', '', '', 'I Agree'], _
+		[$arc_conv, 'arc_conv', t('PLUGIN_ARC_CONV'), 'nsa, wolf, xp3, ypf', 'arc_convert.zip', 'arc_conv.exe', '', '', 0], _
 		[$thinstall, 'h4sh3m Virtual Apps Dependency Extractor', t('PLUGIN_THINSTALL'), 'exe (Thinstall)', 'Extractor.rar', '', '', '', 'h4sh3m'], _
 		[$iscab, 'iscab', t('PLUGIN_ISCAB'), 'cab', 'iscab.exe;ISTools.dll', '', '', '', 0], _
 		[$unreal, 'Unreal Engine Resource Viewer', t('PLUGIN_UNREAL'), 'pak, u, uax, upk', 'umodel_win32.zip', 'umodel.exe|SDL2.dll', '', '', 0], _
 		[$dcp, 'WinterMute Engine Unpacker', t('PLUGIN_WINTERMUTE'), 'dcp', $dcp, '', '', '', 0], _
-		[$ci, 'CreateInstall Extractor', t('PLUGIN_CI', CreateArray("ci-extractor.exe", "gea.dll", "gentee.dll")), 'exe (CreateInstall)', 'ci-extractor.exe;gea.dll;gentee.dll', '', '', '', 0], _
+		[$ci, 'CreateInstall Extractor', t('PLUGIN_CI', CreateArray("ci-extractor.exe", "gea.dll", "gentee.dll")), 'exe (CreateInstall)', 'cif-setup.zip', 'ci-extractor.exe|gea.dll|gentee.dll', '', '', 0], _
 		[$dgca, 'DGCA', t('PLUGIN_DGCA'), 'dgca', 'dgca_v*.zip', $dgca, '', '', 0], _
 		[$bootimg, 'bootimg', t('PLUGIN_BOOTIMG'), 'boot.img', 'unpack_repack_kernel_redmi1s.zip', 'bootimg.exe', '', '', 0], _
 		[$is5cab, 'is5comp', t('PLUGIN_IS5COMP'), 'cab (InstallShield)', 'i5comp21.rar', 'I5comp.exe|ZD50149.DLL|ZD51145.DLL', '', '', 0], _
@@ -9507,7 +9522,8 @@ Func GUI_Plugins($hParent = 0, $sSelection = 0)
 				If $current == -1 Then ContinueLoop
 				GUICtrlSetState($GUI_Plugins_Download, $GUI_DISABLE)
 				Cout("Download clicked for plugin " & $aPluginInfo[$current][1])
-				OpenURL($sUrlGetUrl & $aPluginInfo[$current][1])
+				Local $sPluginUrl = _GetPluginDownloadUrl($aPluginInfo[$current][1])
+				If $sPluginUrl <> "" Then OpenURL($sPluginUrl)
 				GUICtrlSetState($GUI_Plugins_Download, $GUI_ENABLE)
 		EndSwitch
 	WEnd
@@ -9515,6 +9531,37 @@ Func GUI_Plugins($hParent = 0, $sSelection = 0)
 	FileChangeDir($sWorkingDir)	; Reset working dir in case it was changed by FileOpenDialog
 	GUIDelete($GUI_Plugins)
 	Opt("GUIOnEventMode", 1)
+EndFunc
+
+Func _GetPluginDownloadUrl($sPluginName)
+	Switch $sPluginName
+		Case 'arc_conv'
+			Return "https://sourceforge.net/projects/archivconvert/files/archivconvert/version_0.81/arc_convert.zip/download"
+		Case 'h4sh3m Virtual Apps Dependency Extractor'
+			Return "https://github.com/Bioruebe/UniExtract2/issues/75"
+		Case 'iscab'
+			Return "https://code.google.com/archive/p/uniextract/source/default/source"
+		Case 'Unreal Engine Resource Viewer'
+			Return "https://www.gildor.org/en/projects/umodel"
+		Case 'WinterMute Engine Unpacker'
+			Return "https://www.mediafire.com/download.php?rard7tih3dwmqjf"
+		Case 'CreateInstall Extractor'
+			Return "https://www.createinstall.com/download-free-trial.html"
+		Case 'DGCA'
+			Return "https://www.ponsoftware.com/archiver/product/product.htm"
+		Case 'bootimg'
+			Return "https://xdaforums.com/t/guide-how-to-unpack-repack-kernel-windows-linux.2908458/"
+		Case 'is5comp'
+			Return "https://www.cdmediaworld.com/hardware/cdrom/files.shtml"
+		Case 'WolfDec'
+			Return "https://github.com/Sinflower/WolfDec/releases"
+		Case 'ExtSIS'
+			Return "https://en.freedownloadmanager.org/Windows-PC/SISContents-FREE.html"
+		Case 'Bitrock Unpacker'
+			Return "https://github.com/Harakku/bitrock-unpacker/releases"
+	EndSwitch
+
+	Return ""
 EndFunc
 
 Func GUI_Plugins_Install($aPluginInfo, $sPath)
@@ -9745,16 +9792,27 @@ Func GUI_About()
 	Cout("Creating about GUI")
 
 	Local $hGui = _GUICreate($title & ' "' & $sCodename & '"', $iWidth, $iHeight, -1, -1, -1, $exStyle, $guimain)
+	Local $sTimestamp = FileGetVersion($sUniExtract, "Timestamp")
+	Local $sDate = StringSplit($sTimestamp, " ")[1]
+
 	_GuiSetColor()
 	Local $idLabel = GUICtrlCreateLabel($name, 16, 16, $iWidth - 32, 52, $SS_CENTER)
 	GUICtrlSetFont(-1, 25, 400, 0, $FONT_ARIAL)
-	GUICtrlCreateLabel(t('ABOUT_VERSION', CreateArray($sVersion, FileGetVersion($sUniExtract, "Timestamp"))), 16, 72, $iWidth - 32, 17, $SS_CENTER)
-	GUICtrlCreateLabel(t('ABOUT_INFO_LABEL', CreateArray("Jared Breland <jbreland@legroom.net>", "uniextract@bioruebe.com", "Modified by gvp9000", "TrIDLib (C) 2008 - 2011 Marco Pontello" & @CRLF & "<http://mark0.net/code-tridlib-e.html>", "GNU GPLv2")), 16, 104, $iWidth - 32, $iHeight - 104 - 58, $SS_CENTER)
+
+	GUICtrlCreateLabel("Version " & $sVersion & " by gvp9000 (" & $sDate & ")", 16, 72, $iWidth - 32, 17, $SS_CENTER)
+
+	GUICtrlCreateLabel( _
+		"Original version by Jared Breland <jbreland@legroom.net>" & @CRLF & _
+		"Version 2.0.0 by Bioruebe <uniextract@bioruebe.com>" & @CRLF & @CRLF & _
+		"English language file by Jared Breland/Bioruebe", _
+		16, 104, $iWidth - 32, $iHeight - 104 - 58, $SS_CENTER)
+
 	GUICtrlCreateLabel($sOptGuid, 5, $iHeight - 15, 275, 15)
 	GUICtrlSetFont(-1, 8, 800, 0, $FONT_ARIAL)
-	Local $sPath = $iconsdir & "Bioruebe" & ($bHighContrastMode? "White": "") & ".png"
+
+	Local $sPath = $iconsdir & "gvp9000" & ($bHighContrastMode ? "White" : "") & ".png"
 	Local $idOk = GUICtrlCreateButton(t('OK_BUT'), $iWidth / 2 - 45, $iHeight - 50, 90, 25)
-	_GUICtrlCreatePic($sPath , $iWidth - 100 - 10, $iHeight - 58, 100, 48)
+	_GUICtrlCreatePic($sPath, $iWidth - 100 - 10, $iHeight - 58, 100, 48)
 	_GuiSetScale($hGui, $iWidth, $iHeight, $idLabel, $idOk)
 	GUISetState(@SW_SHOW)
 
