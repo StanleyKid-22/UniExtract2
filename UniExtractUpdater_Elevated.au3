@@ -2,7 +2,7 @@
 #AutoIt3Wrapper_Icon=support\Icons\uniextract_exe.ico
 #AutoIt3Wrapper_Outfile=UniExtractUpdater.exe
 #AutoIt3Wrapper_Res_Description=Update utility for Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=2.0.0.0
+#AutoIt3Wrapper_Res_Fileversion=2.7.0.0
 #EndRegion ;**** Directives created by AutoIt3Wrapper_GUI ****
 
 #cs ----------------------------------------------------------------------------
