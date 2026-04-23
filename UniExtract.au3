@@ -3,9 +3,9 @@
 #AutoIt3Wrapper_Outfile=.\UniExtract.exe
 #AutoIt3Wrapper_Res_Description=Universal Extractor
 #AutoIt3Wrapper_Res_ProductName=Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=2.7.0.0
-#AutoIt3Wrapper_Res_ProductVersion=2.7.0.0
-#AutoIt3Wrapper_Res_CompanyName=Legroom.net
+#AutoIt3Wrapper_Res_Fileversion=2.8.0.0
+#AutoIt3Wrapper_Res_ProductVersion=2.8.0.0
+#AutoIt3Wrapper_Res_CompanyName=gvp9000
 #AutoIt3Wrapper_Res_Language=1033
 #AutoIt3Wrapper_Res_LegalCopyright=GNU General Public License v2
 #AutoIt3Wrapper_Res_Field=Author|Jared Breland, Bioruebe, gvp9000
@@ -71,8 +71,8 @@
 #include "Pie.au3"
 
 Const $name = "Universal Extractor"
-Const $sVersion = "2.7.0 RC7"
-Const $sVersionId = "2R7"
+Const $sVersion = "2.8.0"
+Const $sVersionId = "2.8.0"
 Const $sCodename = "New Start"
 Const $title = $name & " " & $sVersion
 Const $sUrlWebsiteOriginal = "https://www.legroom.net/software/uniextract"
@@ -345,6 +345,7 @@ EndIf
 ReadPrefs()
 
 Cout("Starting " & $name & " " & $sVersion)
+_LogDieVersion()
 
 ParseCommandLine()
 
@@ -491,7 +492,15 @@ Func StartExtraction()
 	CheckExt()
 
 	If check7z(0, False, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_7Z, "7-Zip " & t('TERM_ARCHIVE'))
+	If $g_bArchiveIntegrityError Then
+		Cout("Definitive archive corruption/broken-volume failure detected after general 7-Zip probe; aborting further fallback scans")
+		terminate($STATUS_FAILED, $file, $TYPE_7Z, "7-Zip " & t('TERM_ARCHIVE'))
+	EndIf
 	FileScan_UnixFile()
+	If $g_bArchiveIntegrityError Then
+		Cout("Definitive archive corruption/broken-volume failure detected after unix file tool stage; aborting strict fallback")
+		terminate($STATUS_FAILED, $file, $TYPE_7Z, "7-Zip " & t('TERM_ARCHIVE'))
+	EndIf
 	ResolveStrictPipeline()
 
 	; Cannot determine filetype, all checks failed - abort
@@ -541,10 +550,18 @@ Func IsExe()
 	EndIf
 	If $sSkip7zReason = "" Then
 		If check7z(0, False, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_7Z, "7-Zip " & t('TERM_INSTALLER') & " " & t('TERM_PACKAGE'))
+		If $g_bArchiveIntegrityError Then
+			Cout("Definitive archive corruption/broken-volume failure detected after executable 7-Zip probe; aborting further fallback scans")
+			terminate($STATUS_FAILED, $file, $TYPE_7Z, "7-Zip " & t('TERM_INSTALLER') & " " & t('TERM_PACKAGE'))
+		EndIf
 	Else
 		Cout("Skipping 7zip probe because detectors corroborated " & $sSkip7zReason)
 	EndIf
 	FileScan_UnixFile()
+	If $g_bArchiveIntegrityError Then
+		Cout("Definitive archive corruption/broken-volume failure detected after unix file tool stage; aborting strict fallback")
+		terminate($STATUS_FAILED, $file, $TYPE_7Z, "7-Zip " & t('TERM_INSTALLER') & " " & t('TERM_PACKAGE'))
+	EndIf
 	ResolveStrictPipeline()
 
 	terminate($STATUS_UNKNOWNEXE, $file, StringLeft($aFiletype[0][1], 50))
@@ -1223,6 +1240,35 @@ Func _SanitizeDieOutput($sText)
 	Next
 
 	Return StringStripWS($sOut, 3)
+EndFunc
+
+; Log Detect It Easy (DiE) CLI version once at startup
+Func _LogDieVersion()
+	If Not FileExists($diec_path) Then
+		Cout("Detect It Easy (DiE) CLI not found: " & $diec_path)
+		Return ""
+	EndIf
+
+	Local $sDieWorkDir = $bindir & "die"
+	Local $sDieVersionLog = @TempDir & "\diec_version_" & @AutoItPID & ".log"
+	Local $iExitCode = 0, $sDieVersion = ""
+
+	FileDelete($sDieVersionLog)
+	$iExitCode = RunWait(@ComSpec & ' /d /c ""' & $diec_path & '" --version > "' & $sDieVersionLog & '" 2>&1"', $sDieWorkDir, @SW_HIDE)
+	If FileExists($sDieVersionLog) Then $sDieVersion = _FileRead($sDieVersionLog, True)
+	FileDelete($sDieVersionLog)
+
+	If StringIsSpace($sDieVersion) Then
+		Cout("Detect It Easy (DiE) version: unknown (diec.exe --version produced no output, exit code " & $iExitCode & ")")
+		Return ""
+	EndIf
+
+	$sDieVersion = StringReplace($sDieVersion, @CRLF, " | ")
+	$sDieVersion = StringReplace($sDieVersion, @LF, " | ")
+	$sDieVersion = StringReplace($sDieVersion, @CR, " | ")
+	$sDieVersion = StringStripWS($sDieVersion, 7)
+	Cout("Detect It Easy (DiE) version: " & $sDieVersion & " (exit code " & $iExitCode & ")")
+	Return $sDieVersion
 EndFunc
 
 ; Scan file with Detect It Easy (DiE), fallback to Exeinfo PE
@@ -2275,7 +2321,7 @@ EndFunc
 
 ; Determine if 7-zip can extract the file
 Func check7z($arcdisp = 0, $bIsDiskImage = False, $returnSuccess = False, $returnFail = False)
-	If $7zfailed Then Return
+	If $7zfailed Or $g_bArchiveIntegrityError Then Return
 
 	Cout("Testing 7zip")
 	_CreateTrayMessageBox(t('TERM_TESTING') & " " & ($arcdisp == 0? "7-Zip": $arcdisp))
@@ -2944,6 +2990,10 @@ EndFunc
 
 Func ResolveStrictPipeline()
 	If Not $extract Then Return False
+	If $g_bArchiveIntegrityError Then
+		Cout("Strict fallback: skipped because a definitive archive corruption/broken-volume failure was already detected")
+		Return False
+	EndIf
 
 	Cout("Strict fallback: resolving stored detector hints")
 	$g_bStrictPipeline = False
@@ -3023,6 +3073,10 @@ EndFunc
 ; Perform non-fatal extension-based extraction attempts before detector-based routing.
 Func _TryExtExtract($arctype, $arcdisp = 0, $additionalParameters = "")
 	If extract($arctype, $arcdisp, $additionalParameters, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $arctype, $arcdisp)
+	If $g_bArchiveIntegrityError Then
+		Cout("Definitive archive corruption/broken-volume failure detected during extension-based attempt; stopping further fallback retries")
+		terminate($STATUS_FAILED, $file, $arctype, $arcdisp)
+	EndIf
 	Return False
 EndFunc
 
@@ -3033,6 +3087,10 @@ EndFunc
 
 Func _TryExtCheck7z($arcdisp = 0, $bIsDiskImage = False)
 	If check7z($arcdisp, $bIsDiskImage, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_7Z, $arcdisp)
+	If $g_bArchiveIntegrityError Then
+		Cout("Definitive archive corruption/broken-volume failure detected during 7-Zip probe; stopping further fallback retries")
+		terminate($STATUS_FAILED, $file, $TYPE_7Z, $arcdisp)
+	EndIf
 	Return False
 EndFunc
 
@@ -3270,7 +3328,9 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			If @error = 3 Then terminate($STATUS_MISSINGPART)
 			If @extended Then terminate($STATUS_PASSWORD, $file, $arctype, $arcdisp)
 
-			If FileExists($outdir & "\.text") Then
+			If $g_bArchiveIntegrityError Then
+				Cout("Definitive 7-Zip archive corruption/broken-volume failure detected; skipping SFX/script and nested post-processing")
+			ElseIf FileExists($outdir & "\.text") Then
 				; Generic .exe extraction should not be considered successful
 				$success = $RESULT_FAILED
 			ElseIf StringInStr($sFileType, "RPM Linux Package", 0) Then
@@ -4034,6 +4094,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			DirRemove(@MyDocumentsDir & "\SISContents", 0)
 
 		Case $TYPE_SQLITE
+			LogExtractorWinner("sqlite3")
 			Local $return = FetchStdout($sqlite & ' "' & $file & '" .dump"', $filedir, @SW_HIDE, 0)
 			Local $hFile = FileOpen($outdir & '\' & $filename & '.sql', $FO_CREATEPATH + $FO_OVERWRITE)
 			FileWrite($hFile, $return)
@@ -4387,8 +4448,13 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 
 		Case $TYPE_ZIP
 			If Not extract($TYPE_7Z, -1, $additionalParameters, False, True) Then
-				If $arcdisp > -1 Then _CreateTrayMessageBox(t('EXTRACTING') & @CRLF & $arcdisp)
-				_Run($zip & ' -x "' & $file & '"', $outdir, @SW_MINIMIZE, True, False)
+				If $g_bArchiveIntegrityError Then
+					Cout("Definitive archive corruption/broken-volume failure detected after 7-Zip ZIP attempt; skipping unzip fallback")
+					$success = $RESULT_FAILED
+				Else
+					If $arcdisp > -1 Then _CreateTrayMessageBox(t('EXTRACTING') & @CRLF & $arcdisp)
+					_Run($zip & ' -x "' & $file & '"', $outdir, @SW_MINIMIZE, True, False)
+				EndIf
 			EndIf
 
 		Case $TYPE_ZOO
@@ -9799,13 +9865,12 @@ Func GUI_About()
 	Local $idLabel = GUICtrlCreateLabel($name, 16, 16, $iWidth - 32, 52, $SS_CENTER)
 	GUICtrlSetFont(-1, 25, 400, 0, $FONT_ARIAL)
 
-	GUICtrlCreateLabel("Version " & $sVersion & " by gvp9000 (" & $sDate & ")", 16, 72, $iWidth - 32, 17, $SS_CENTER)
-
-	GUICtrlCreateLabel( _
-		"Original version by Jared Breland <jbreland@legroom.net>" & @CRLF & _
-		"Version 2.0.0 by Bioruebe <uniextract@bioruebe.com>" & @CRLF & @CRLF & _
-		"English language file by Jared Breland/Bioruebe", _
-		16, 104, $iWidth - 32, $iHeight - 104 - 58, $SS_CENTER)
+	GUICtrlCreateLabel(t('ABOUT_VERSION', CreateArray($sVersion, $sDate)), 16, 72, $iWidth - 32, 17, $SS_CENTER)
+	GUICtrlCreateLabel(t('ABOUT_INFO_LABEL', CreateArray( _
+		"Jared Breland <jbreland@legroom.net>", _
+		"uniextract@bioruebe.com", _
+		$sVersion, _
+		"GPL v3")), 16, 104, $iWidth - 32, $iHeight - 104 - 58, $SS_CENTER)
 
 	GUICtrlCreateLabel($sOptGuid, 5, $iHeight - 15, 275, 15)
 	GUICtrlSetFont(-1, 8, 800, 0, $FONT_ARIAL)
